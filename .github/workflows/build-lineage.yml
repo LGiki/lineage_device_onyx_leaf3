@@ -41,7 +41,8 @@ jobs:
             python3 python3-venv repo rsync schedtool squashfs-tools unzip xsltproc zip zlib1g-dev
 
       - name: Restore encrypted stock OTA
-        uses: actions/cache@v4
+        id: stock-ota-cache
+        uses: actions/cache/restore@v4
         with:
           path: stock-cache/update.upx
           key: page-3.5-ota-0be5912e1bc73a8177abe03623f0d1140c01184c49a2f7d7012b43573f6e148c
@@ -51,9 +52,21 @@ jobs:
           repo init --depth=1 -u https://github.com/LineageOS/android.git -b lineage-18.1
           repo sync -c --no-clone-bundle --no-tags --fail-fast -j"${BUILD_JOBS}"
 
-      - name: Prepare stock kernel and vendor blobs
+      - name: Extract stock images
         run: |
           device/onyx/leaf3/prepare-stock-images.sh "${RUNNER_TEMP}/stock-images"
+
+      # Save before the expensive Android build. This avoids depending on a
+      # post-job cache hook, which is skipped when a run is cancelled.
+      - name: Save encrypted stock OTA
+        if: steps.stock-ota-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: stock-cache/update.upx
+          key: page-3.5-ota-0be5912e1bc73a8177abe03623f0d1140c01184c49a2f7d7012b43573f6e148c
+
+      - name: Prepare stock kernel and vendor blobs
+        run: |
           device/onyx/leaf3/prepare-kernel.sh "${RUNNER_TEMP}/stock-images/boot.img"
           device/onyx/leaf3/extract-files.sh "${RUNNER_TEMP}/stock-images/vendor.img"
 
