@@ -20,9 +20,9 @@ mkdir -p "$VENDOR_DIR"
     # excluded during native-hardware first boot bring-up.
     case "$relative" in
       vendor/build.prop|vendor/default.prop|vendor/etc/fstab.qcom|vendor/etc/vintf/*|*.apk|*.jar|*.odex|*.vdex) continue;;
-      # Lineage supplies generic Android HAL services. Retain Qualcomm-specific
-      # implementations, which have matching vendor libraries and firmware.
-      vendor/bin/hw/android.hardware.*qti*) :;;
+      # Lineage supplies Android-namespaced HAL services, including several
+      # Qualcomm implementations such as the USB HAL. Keep only vendor-
+      # namespaced stock HAL services (vendor.qti.*, etc.).
       vendor/bin/hw/android.hardware.*) continue;;
       # Keep other HAL executables below vendor/bin/hw. Direct vendor/bin
       # entries mix Qualcomm daemons with platform utilities (awk, applypatch,
