@@ -47,10 +47,26 @@ jobs:
           path: stock-cache/update.upx
           key: page-3.5-ota-0be5912e1bc73a8177abe03623f0d1140c01184c49a2f7d7012b43573f6e148c
 
+      - name: Restore compiler cache
+        id: ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: lineage18-leaf3-ccache-${{ github.sha }}
+          restore-keys: |
+            lineage18-leaf3-ccache-
+
+      - name: Configure compiler cache
+        env:
+          CCACHE_DIR: ${{ runner.temp }}/ccache
+        run: |
+          ccache --max-size=6G
+          ccache --zero-stats
+
       - name: Initialize LineageOS 18.1
         run: |
           repo init --depth=1 -u https://github.com/LineageOS/android.git -b lineage-18.1
-          repo sync -c --no-clone-bundle --no-tags --fail-fast -j"${BUILD_JOBS}"
+          repo sync -c --no-clone-bundle --no-tags --optimized-fetch --fail-fast -j"${BUILD_JOBS}"
 
       - name: Extract stock images
         run: |
@@ -77,6 +93,13 @@ jobs:
           source build/envsetup.sh
           lunch lineage_leaf3-userdebug
           mka -j"${BUILD_JOBS}" bacon
+
+      - name: Save compiler cache
+        if: ${{ always() && steps.ccache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: lineage18-leaf3-ccache-${{ github.sha }}
 
       - name: Upload build output
         if: always()
