@@ -19,7 +19,10 @@ mkdir -p "$VENDOR_DIR"
     # Vendor Java apps need dedicated prebuilt modules; they are intentionally
     # excluded during native-hardware first boot bring-up.
     case "$relative" in
-      vendor/build.prop|vendor/default.prop|vendor/bin/acpi|vendor/etc/fstab.qcom|vendor/etc/vintf/*|*.apk|*.jar|*.odex|*.vdex) continue;;
+      vendor/build.prop|vendor/default.prop|vendor/etc/fstab.qcom|vendor/etc/vintf/*|*.apk|*.jar|*.odex|*.vdex) continue;;
+      # AOSP/Lineage installs these utilities itself. Stock copies would
+      # overwrite build targets and are not device-specific blobs.
+      vendor/bin/acpi|vendor/bin/applypatch|vendor/bin/basename|vendor/bin/blkid|vendor/bin/chcon|vendor/bin/chmod|vendor/bin/chown|vendor/bin/date|vendor/bin/dmesg|vendor/bin/grep|vendor/bin/gzip|vendor/bin/insmod|vendor/bin/kill|vendor/bin/linker|vendor/bin/logd|vendor/bin/mkdir|vendor/bin/mount|vendor/bin/ping|vendor/bin/reboot|vendor/bin/rmdir|vendor/bin/setenforce|vendor/bin/sleep|vendor/bin/sync|vendor/bin/toybox|vendor/bin/umount|vendor/bin/vendor_init) continue;;
     esac
     printf '    $(LOCAL_PATH)/proprietary/%s:$(TARGET_COPY_OUT_VENDOR)/%s \\\n' "${relative#vendor/}" "${relative#vendor/}"
   done
