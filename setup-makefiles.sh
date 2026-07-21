@@ -19,7 +19,7 @@ mkdir -p "$VENDOR_DIR"
     # Vendor Java apps need dedicated prebuilt modules; they are intentionally
     # excluded during native-hardware first boot bring-up.
     case "$relative" in
-      vendor/build.prop|vendor/default.prop|vendor/etc/fstab.qcom|vendor/etc/fs_config_dirs|vendor/etc/fs_config_files|vendor/etc/vintf/*|*.apk|*.jar|*.odex|*.vdex) continue;;
+      vendor/build.prop|vendor/default.prop|vendor/etc/fstab.qcom|vendor/etc/fs_config_dirs|vendor/etc/fs_config_files|vendor/etc/group|vendor/etc/passwd|vendor/etc/vintf/*|*.apk|*.jar|*.odex|*.vdex) continue;;
       # Lineage supplies Android-namespaced HAL services, including several
       # Qualcomm implementations such as the USB HAL. Keep only vendor-
       # namespaced stock HAL services (vendor.qti.*, etc.).
