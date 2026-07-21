@@ -15,11 +15,13 @@ mkdir -p "$VENDOR_DIR"
 # log demonstrates that a specific Qualcomm/ONYX component needs them.
 is_selected_blob() {
   case "$1" in
+    # Android-namespaced HAL services are built by Lineage, even when their
+    # stock executable name has a Qualcomm suffix.
+    vendor/bin/hw/android.hardware.*|vendor/lib*/hw/android.hardware.*)
+      return 1;;
     # Qualcomm/ONYX services, their hardware modules, and GPU modules.
     vendor/bin/hw/vendor.*|vendor/bin/hw/*qti*|vendor/lib*/hw/vendor.*|vendor/lib*/hw/*qti*|vendor/lib*/egl/*|vendor/lib*/soundfx/*)
       return 0;;
-    vendor/lib*/hw/android.hardware.*)
-      return 1;;
     vendor/lib*/hw/*)
       return 0;;
 
