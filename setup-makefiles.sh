@@ -19,9 +19,17 @@ mkdir -p "$VENDOR_DIR"
     # Vendor Java apps need dedicated prebuilt modules; they are intentionally
     # excluded during native-hardware first boot bring-up.
     case "$relative" in
-      vendor/build.prop|vendor/default.prop|vendor/etc/fstab.qcom|*.apk|*.jar|*.odex|*.vdex) continue;;
+      vendor/build.prop|vendor/default.prop|vendor/etc/fstab.qcom|vendor/etc/vintf/*|*.apk|*.jar|*.odex|*.vdex) continue;;
     esac
     printf '    $(LOCAL_PATH)/proprietary/%s:$(TARGET_COPY_OUT_VENDOR)/%s \\\n' "${relative#vendor/}" "${relative#vendor/}"
   done
   echo
+  # VINTF XML is assembled by the build system, rather than copied as a raw
+  # vendor file.  The stock Android 11 declarations match the stock HALs.
+  if [[ -f "$BLOBS/etc/vintf/manifest.xml" ]]; then
+    echo 'DEVICE_MANIFEST_FILE += $(LOCAL_PATH)/proprietary/vendor/etc/vintf/manifest.xml'
+  fi
+  if [[ -f "$BLOBS/etc/vintf/compatibility_matrix.xml" ]]; then
+    echo 'DEVICE_MATRIX_FILE += $(LOCAL_PATH)/proprietary/vendor/etc/vintf/compatibility_matrix.xml'
+  fi
 } > "$OUT"
