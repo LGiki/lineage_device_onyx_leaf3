@@ -1,7 +1,5 @@
 DEVICE_PATH := device/onyx/leaf3
 
-ALLOW_MISSING_DEPENDENCIES := true
-
 # Architecture
 TARGET_ARCH := arm64
 TARGET_ARCH_VARIANT := armv8-a
@@ -23,6 +21,7 @@ TARGET_USES_64_BIT_BINDER := true
 QCOM_BOARD_PLATFORMS += bengal
 TARGET_PREBUILT_KERNEL := $(DEVICE_PATH)/prebuilt/kernel
 BOARD_PREBUILT_DTBIMAGE_DIR := $(DEVICE_PATH)/prebuilt/dtb
+BOARD_PREBUILT_DTBOIMAGE := $(DEVICE_PATH)/prebuilt/dtbo.img
 BOARD_INCLUDE_DTB_IN_BOOTIMG := true
 
 # Stock boot image v2 layout.
@@ -67,12 +66,15 @@ AB_OTA_UPDATER := true
 BOARD_USES_RECOVERY_AS_BOOT := false
 BOARD_BUILD_SYSTEM_ROOT_IMAGE := false
 BOARD_USES_METADATA_PARTITION := true
+BOARD_ROOT_EXTRA_FOLDERS += onyxconfig
+
+# Match the stock boot/vendor rollback metadata used by the pinned firmware.
+PLATFORM_SECURITY_PATCH := 2024-02-01
+VENDOR_SECURITY_PATCH := 2024-02-01
+BOOT_SECURITY_PATCH := 2024-02-01
 
 # Generate an unlock-friendly test vbmeta.  Do not use this configuration for
 # a release build: release signing and rollback indexes need device-specific
 # handling.
 BOARD_AVB_ENABLE := true
 BOARD_AVB_MAKE_VBMETA_IMAGE_ARGS += --flags 3
-
-# Initial bring-up is permissive while the stock vendor policy is integrated.
-SELINUX_IGNORE_NEVERALLOWS := true

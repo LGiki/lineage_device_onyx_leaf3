@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Download the checksum-pinned Page 3.5 OTA and make the partitions needed by
-# the Android 11 bring-up.  This avoids committing proprietary images.
+# Download the checksum-pinned Page 3.5 OTA and extract only the boot-chain
+# inputs needed by the Android 11 bring-up. This avoids committing proprietary
+# images and avoids expanding unused multi-gigabyte logical partitions.
 DEVICE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CACHE_DIR="${BOOX_PAGE_35_STOCK_CACHE:-$DEVICE_DIR/.cache/page-3.5-stock}"
 OUT_DIR="${1:-$DEVICE_DIR/stock-images}"

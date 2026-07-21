@@ -4,9 +4,14 @@ set -euo pipefail
 # Extract every file from a stock vendor ext4 image without mounting it.  This
 # is intended for a Linux LineageOS build host with e2fsprogs installed.
 DEVICE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-IMAGE="${1:-$DEVICE_DIR/../stock-images/vendor.img}"
+IMAGE="${1:-$DEVICE_DIR/stock-images/vendor.img}"
 VENDOR_DIR="${ANDROID_BUILD_TOP:-$(cd "$DEVICE_DIR/../../.." && pwd)}/vendor/onyx/leaf3"
 PROPRIETARY_DIR="$VENDOR_DIR/proprietary"
+
+case "$PROPRIETARY_DIR" in
+  */vendor/onyx/leaf3/proprietary) ;;
+  *) echo "Refusing unsafe proprietary output path: $PROPRIETARY_DIR" >&2; exit 1;;
+esac
 
 command -v debugfs >/dev/null || { echo "debugfs (e2fsprogs) is required." >&2; exit 1; }
 [[ -f "$IMAGE" ]] || { echo "Missing vendor image: $IMAGE" >&2; exit 1; }
@@ -27,5 +32,10 @@ if rg -v '^(rdump|dump_file): Operation not permitted while changing ownership o
   exit 1
 fi
 rm -rf "$PROPRIETARY_DIR/vendor/lost+found"
-"$DEVICE_DIR/setup-makefiles.sh" "$VENDOR_DIR"
-echo "Extracted vendor blobs to $VENDOR_DIR"
+INVENTORY="$VENDOR_DIR/proprietary-files.inventory"
+(
+  cd "$PROPRIETARY_DIR"
+  find vendor \( -type f -o -type l \) -print | LC_ALL=C sort
+) > "$INVENTORY"
+echo "Extracted vendor inventory to $VENDOR_DIR"
+echo "This is discovery output only; it is not inherited by the build."

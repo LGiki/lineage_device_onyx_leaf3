@@ -7,12 +7,7 @@ import sys
 PARTITIONS = (
     "boot",
     "dtbo",
-    "product",
-    "system",
-    "system_ext",
-    "vbmeta",
-    "vbmeta_system",
-    "vendor",
+    "recovery",
 )
 
 

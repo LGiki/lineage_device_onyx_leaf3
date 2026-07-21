@@ -1,4 +1,6 @@
 /prebuilt/kernel
 /prebuilt/dtb/
+/prebuilt/dtbo.img
+/prebuilt/eink_waveform.wbf
 /.cache/
 /stock-images/

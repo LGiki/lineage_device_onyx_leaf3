@@ -36,9 +36,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             bc bison build-essential ccache cpio curl flex g++-multilib gcc-multilib \
-            git gnupg gperf lib32ncurses5-dev lib32readline-dev lib32z1-dev \
-            liblz4-tool libncurses5-dev libssl-dev libxml2-utils lzop openjdk-11-jdk \
-            python3 python3-venv repo rsync schedtool squashfs-tools unzip xsltproc zip zlib1g-dev
+            git git-lfs gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev \
+            lib32z1-dev libelf-dev liblz4-tool libncurses5-dev libssl-dev \
+            libxml2-utils lzop openjdk-11-jdk python3 python3-venv repo ripgrep \
+            rsync schedtool squashfs-tools unzip xz-utils xsltproc zip zlib1g-dev
 
       - name: Restore encrypted stock OTA
         id: stock-ota-cache
@@ -60,7 +61,7 @@ jobs:
         env:
           CCACHE_DIR: ${{ runner.temp }}/ccache
         run: |
-          ccache --max-size=6G
+          ccache --max-size=4G
           ccache --zero-stats
 
       - name: Initialize LineageOS 18.1
@@ -81,25 +82,64 @@ jobs:
           path: stock-cache/update.upx
           key: page-3.5-ota-0be5912e1bc73a8177abe03623f0d1140c01184c49a2f7d7012b43573f6e148c
 
-      - name: Prepare stock kernel and vendor blobs
+      - name: Prepare stock boot-chain inputs
         run: |
-          device/onyx/leaf3/prepare-kernel.sh "${RUNNER_TEMP}/stock-images/boot.img"
-          device/onyx/leaf3/extract-files.sh "${RUNNER_TEMP}/stock-images/vendor.img"
+          device/onyx/leaf3/prepare-kernel.sh \
+            "${RUNNER_TEMP}/stock-images/boot.img" \
+            "${RUNNER_TEMP}/stock-images/dtbo.img" \
+            "${RUNNER_TEMP}/stock-images/recovery.img"
 
-      - name: Build LineageOS
+      - name: Build first-boot images
         env:
           CCACHE_DIR: ${{ runner.temp }}/ccache
         run: |
           source build/envsetup.sh
           lunch lineage_leaf3-userdebug
-          mka -j"${BUILD_JOBS}" bacon
+          mka -j"${BUILD_JOBS}" \
+            bootimage \
+            dtboimage \
+            systemimage \
+            productimage \
+            systemextimage \
+            vbmetaimage
+
+      - name: Verify first-boot images
+        run: |
+          set -euo pipefail
+          PRODUCT_OUT=out/target/product/leaf3
+          UNPACKED="${RUNNER_TEMP}/leaf3-boot"
+          RAMDISK_LIST="${RUNNER_TEMP}/leaf3-ramdisk.list"
+
+          test -s "${PRODUCT_OUT}/boot.img"
+          test -s "${PRODUCT_OUT}/dtbo.img"
+          test -s "${PRODUCT_OUT}/system.img"
+          test -s "${PRODUCT_OUT}/product.img"
+          test -s "${PRODUCT_OUT}/system_ext.img"
+          test -s "${PRODUCT_OUT}/vbmeta.img"
+          test "$(stat -c %s "${PRODUCT_OUT}/boot.img")" -le 100663296
+          test "$(stat -c %s "${PRODUCT_OUT}/dtbo.img")" -le 25165824
+          cmp "${PRODUCT_OUT}/dtbo.img" device/onyx/leaf3/prebuilt/dtbo.img
+
+          mkdir -p "${UNPACKED}"
+          python3 system/tools/mkbootimg/unpack_bootimg.py \
+            --boot_img "${PRODUCT_OUT}/boot.img" --out "${UNPACKED}" >/dev/null
+          cmp "${UNPACKED}/kernel" device/onyx/leaf3/prebuilt/kernel
+          cmp "${UNPACKED}/dtb" device/onyx/leaf3/prebuilt/dtb/leaf3.dtb
+          gzip -dc "${UNPACKED}/ramdisk" | cpio -t > "${RAMDISK_LIST}"
+          rg -x 'fstab.emmc' "${RAMDISK_LIST}"
+          rg -x 'waveform/eink_waveform.wbf' "${RAMDISK_LIST}"
+
+          (
+            cd "${PRODUCT_OUT}"
+            sha256sum boot.img dtbo.img system.img product.img system_ext.img vbmeta.img > lineage-leaf3-images.sha256sum
+          )
 
       - name: Save compiler cache
-        if: ${{ always() && steps.ccache.outputs.cache-hit != 'true' }}
+        if: always()
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/ccache
-          key: lineage18-leaf3-ccache-${{ github.sha }}
+          key: lineage18-leaf3-ccache-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Upload build output
         if: always()
@@ -107,8 +147,12 @@ jobs:
         with:
           name: lineage-18.1-leaf3-${{ github.run_number }}
           path: |
-            out/target/product/leaf3/*.zip
-            out/target/product/leaf3/*.img
-            out/target/product/leaf3/*.sha256sum
-          if-no-files-found: warn
+            out/target/product/leaf3/boot.img
+            out/target/product/leaf3/dtbo.img
+            out/target/product/leaf3/system.img
+            out/target/product/leaf3/product.img
+            out/target/product/leaf3/system_ext.img
+            out/target/product/leaf3/vbmeta.img
+            out/target/product/leaf3/lineage-leaf3-images.sha256sum
+          if-no-files-found: error
           retention-days: 7
