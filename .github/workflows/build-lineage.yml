@@ -17,7 +17,6 @@ jobs:
     env:
       BUILD_JOBS: "4"
       USE_CCACHE: "1"
-      CCACHE_DIR: ${{ runner.temp }}/ccache
       BOOX_PAGE_35_STOCK_CACHE: ${{ github.workspace }}/stock-cache
 
     steps:
@@ -59,6 +58,8 @@ jobs:
           device/onyx/leaf3/extract-files.sh "${RUNNER_TEMP}/stock-images/vendor.img"
 
       - name: Build LineageOS
+        env:
+          CCACHE_DIR: ${{ runner.temp }}/ccache
         run: |
           source build/envsetup.sh
           lunch lineage_leaf3-userdebug
