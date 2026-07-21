@@ -20,7 +20,7 @@ mkdir -p "$VENDOR_DIR"
     # excluded during native-hardware first boot bring-up.
     case "$relative" in
       vendor/build.prop|vendor/default.prop|vendor/etc/fstab.qcom|vendor/etc/fs_config_dirs|vendor/etc/fs_config_files|vendor/etc/group|vendor/etc/passwd|vendor/etc/vintf/*|*.apk|*.jar|*.odex|*.vdex) continue;;
-      vendor/etc/init/android.hardware.*|vendor/etc/init/boringssl_self_test.rc|vendor/etc/init/vendor_flash_recovery.rc) continue;;
+      vendor/etc/init/android.hardware.*|vendor/etc/init/boringssl_self_test.rc|vendor/etc/init/vendor_flash_recovery.rc|vendor/etc/init/hwservicemanager.rc|vendor/etc/init/servicemanager.rc|vendor/etc/init/vndservicemanager.rc) continue;;
       # Lineage supplies Android-namespaced HAL services, including several
       # Qualcomm implementations such as the USB HAL. Keep only vendor-
       # namespaced stock HAL services (vendor.qti.*, etc.).
