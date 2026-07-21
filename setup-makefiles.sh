@@ -33,7 +33,7 @@ is_selected_blob() {
     # libraries built by Lineage itself and must never be copied from stock.
     vendor/lib/*.so|vendor/lib64/*.so)
       case "${1##*/}" in
-        libandroid*|libbase.so|libbinder*|libc++.so|libc.so|libcutils.so|libdl.so|libEGL.so|libGLES*|libhardware*.so|libhidl*.so|liblog.so|libm.so|libnativewindow.so|libprocessgroup.so|libselinux.so|libstdc++.so|libutils.so|libvndksupport.so|libvulkan.so|libz.so)
+        android.hardware.*|android.hidl.*|libandroid*|libbase.so|libbinder*|libc++.so|libc.so|libcutils.so|libdl.so|libEGL.so|libGLES*|libhardware*.so|libhidl*.so|liblog.so|libm.so|libnativewindow.so|libprocessgroup.so|libselinux.so|libstdc++.so|libutils.so|libvndksupport.so|libvulkan.so|libz.so)
           return 1;;
         *) return 0;;
       esac;;
