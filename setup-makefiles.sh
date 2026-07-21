@@ -29,6 +29,13 @@ is_selected_blob() {
     vendor/firmware/*|vendor/firmware_mnt/*|vendor/dsp/*|vendor/lib*/firmware/*)
       return 0;;
 
+    # Preserve proprietary vendor HIDL interfaces, but use Lineage-built
+    # Android/common interface libraries for other versioned modules.
+    vendor/lib*/vendor.*@*.so|vendor/lib*/com.qualcomm.*@*.so)
+      return 0;;
+    vendor/lib*/*@*.so)
+      return 1;;
+
     # Keep non-platform vendor shared libraries. The exclusions are runtime
     # libraries built by Lineage itself and must never be copied from stock.
     vendor/lib/*.so|vendor/lib64/*.so)
