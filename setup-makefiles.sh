@@ -19,7 +19,7 @@ mkdir -p "$VENDOR_DIR"
     # Vendor Java apps need dedicated prebuilt modules; they are intentionally
     # excluded during native-hardware first boot bring-up.
     case "$relative" in
-      vendor/build.prop|vendor/default.prop|vendor/etc/fstab.qcom|vendor/etc/vintf/*|*.apk|*.jar|*.odex|*.vdex) continue;;
+      vendor/build.prop|vendor/default.prop|vendor/bin/acpi|vendor/etc/fstab.qcom|vendor/etc/vintf/*|*.apk|*.jar|*.odex|*.vdex) continue;;
     esac
     printf '    $(LOCAL_PATH)/proprietary/%s:$(TARGET_COPY_OUT_VENDOR)/%s \\\n' "${relative#vendor/}" "${relative#vendor/}"
   done
