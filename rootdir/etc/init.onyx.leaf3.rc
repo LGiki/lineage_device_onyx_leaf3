@@ -1,0 +1,9 @@
+on fs
+    wait /dev/block/platform/soc/${ro.boot.bootdevice}
+    symlink /dev/block/platform/soc/${ro.boot.bootdevice} /dev/block/bootdevice
+    setprop ro.board.platform bengal
+
+on early-init
+    # Required for initial userspace bring-up until device SELinux policy is
+    # completed.  BoardConfig also passes androidboot.selinux=permissive.
+    setenforce 0

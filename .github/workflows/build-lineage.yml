@@ -1,0 +1,77 @@
+name: Build LineageOS 18.1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lineage18-leaf3-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    env:
+      BUILD_JOBS: "4"
+      USE_CCACHE: "1"
+      CCACHE_DIR: ${{ runner.temp }}/ccache
+      BOOX_PAGE_35_STOCK_CACHE: ${{ github.workspace }}/stock-cache
+
+    steps:
+      - name: Maximize free build space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/share/swift
+          sudo docker image prune --all --force
+          df -h
+
+      - name: Check out device tree
+        uses: actions/checkout@v4
+        with:
+          path: device/onyx/leaf3
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ccache cpio curl flex g++-multilib gcc-multilib \
+            git gnupg gperf lib32ncurses5-dev lib32readline-dev lib32z1-dev \
+            liblz4-tool libncurses5-dev libssl-dev libxml2-utils lzop openjdk-11-jdk \
+            python3 python3-venv repo rsync schedtool squashfs-tools unzip xsltproc zip zlib1g-dev
+
+      - name: Restore encrypted stock OTA
+        uses: actions/cache@v4
+        with:
+          path: stock-cache/update.upx
+          key: page-3.5-ota-0be5912e1bc73a8177abe03623f0d1140c01184c49a2f7d7012b43573f6e148c
+
+      - name: Initialize LineageOS 18.1
+        run: |
+          repo init --depth=1 -u https://github.com/LineageOS/android.git -b lineage-18.1
+          repo sync -c --no-clone-bundle --no-tags --fail-fast -j"${BUILD_JOBS}"
+
+      - name: Prepare stock kernel and vendor blobs
+        run: |
+          device/onyx/leaf3/prepare-stock-images.sh "${RUNNER_TEMP}/stock-images"
+          device/onyx/leaf3/prepare-kernel.sh "${RUNNER_TEMP}/stock-images/boot.img"
+          device/onyx/leaf3/extract-files.sh "${RUNNER_TEMP}/stock-images/vendor.img"
+
+      - name: Build LineageOS
+        run: |
+          source build/envsetup.sh
+          lunch lineage_leaf3-userdebug
+          mka -j"${BUILD_JOBS}" bacon
+
+      - name: Upload build output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lineage-18.1-leaf3-${{ github.run_number }}
+          path: |
+            out/target/product/leaf3/*.zip
+            out/target/product/leaf3/*.img
+            out/target/product/leaf3/*.sha256sum
+          if-no-files-found: warn
+          retention-days: 7
