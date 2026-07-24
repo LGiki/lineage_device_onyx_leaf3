@@ -68,6 +68,10 @@ BOARD_BUILD_SYSTEM_ROOT_IMAGE := false
 BOARD_USES_METADATA_PARTITION := true
 BOARD_ROOT_EXTRA_FOLDERS += onyxconfig
 
+# Label the custom stock onyxconfig mount point when constructing the root
+# filesystem. Without this, e2fsdroid refuses to create system.img.
+BOARD_SEPOLICY_DIRS += $(DEVICE_PATH)/sepolicy
+
 # Match the stock boot/vendor rollback metadata used by the pinned firmware.
 # PLATFORM_SECURITY_PATCH is owned and made read-only by the Lineage platform.
 VENDOR_SECURITY_PATCH := 2024-02-01

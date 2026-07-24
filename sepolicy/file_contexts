@@ -1,0 +1,5 @@
+# Empty root mount point for the stock ONYX configuration partition.
+/onyxconfig    u:object_r:rootfs:s0
+
+# Stock e-ink waveform copied into the first-stage ramdisk.
+/waveform(/.*)?    u:object_r:rootfs:s0

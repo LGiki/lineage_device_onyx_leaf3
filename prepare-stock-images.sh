@@ -13,6 +13,7 @@ FIRMWARE_URL="http://firmware-us-volc.boox.com/73efa5396d8ff9f53fd34a7e282b8053/
 UPX_SHA256="0be5912e1bc73a8177abe03623f0d1140c01184c49a2f7d7012b43573f6e148c"
 DECRYPT_REVISION="ddcabf6ce27f1acff51a2506b597d506e5f1a928"
 PAYLOAD_REVISION="6952cd8095573b14cae24198fe923347a13790df"
+DOWNLOAD_CONNECTIONS="${BOOX_DOWNLOAD_CONNECTIONS:-8}"
 
 sha256_file() { sha256sum "$1" | awk '{print $1}'; }
 clone_pinned() {
@@ -28,16 +29,45 @@ clone_pinned() {
 for command in curl git python3 unzip sha256sum; do
   command -v "$command" >/dev/null || { echo "Missing command: $command" >&2; exit 1; }
 done
+[[ "$DOWNLOAD_CONNECTIONS" =~ ^([1-9]|1[0-6])$ ]] || {
+  echo "BOOX_DOWNLOAD_CONNECTIONS must be an integer from 1 to 16" >&2
+  exit 1
+}
 
 mkdir -p "$CACHE_DIR" "$TOOLS_DIR" "$OUT_DIR"
 if [[ ! -x "$VENV_DIR/bin/python" ]]; then python3 -m venv "$VENV_DIR"; fi
-"$VENV_DIR/bin/python" -m pip install --disable-pip-version-check protobuf==3.20.3 pycryptodome==3.23.0
+if ! "$VENV_DIR/bin/python" -c \
+  'from importlib.metadata import version; assert version("protobuf") == "3.20.3"; assert version("pycryptodome") == "3.23.0"' \
+  2>/dev/null; then
+  "$VENV_DIR/bin/python" -m pip install \
+    --disable-pip-version-check \
+    protobuf==3.20.3 \
+    pycryptodome==3.23.0
+fi
 clone_pinned https://github.com/Hagb/decryptBooxUpdateUpx.git "$DECRYPT_REVISION" "$TOOLS_DIR/decryptBooxUpdateUpx"
 clone_pinned https://github.com/cyxx/extract_android_ota_payload.git "$PAYLOAD_REVISION" "$TOOLS_DIR/extract_android_ota_payload"
 
 UPX_FILE="$CACHE_DIR/update.upx"
 if [[ ! -f "$UPX_FILE" ]]; then
-  curl --fail --location --retry 3 --continue-at - --output "$UPX_FILE.part" "$FIRMWARE_URL"
+  if command -v aria2c >/dev/null; then
+    echo "Downloading stock ROM with $DOWNLOAD_CONNECTIONS aria2 connections"
+    aria2c \
+      --allow-overwrite=true \
+      --auto-file-renaming=false \
+      --continue=true \
+      --dir="$CACHE_DIR" \
+      --file-allocation=none \
+      --max-connection-per-server="$DOWNLOAD_CONNECTIONS" \
+      --max-tries=5 \
+      --min-split-size=1M \
+      --out="$(basename "$UPX_FILE").part" \
+      --retry-wait=5 \
+      --split="$DOWNLOAD_CONNECTIONS" \
+      "$FIRMWARE_URL"
+  else
+    echo "aria2c is unavailable; downloading stock ROM with curl"
+    curl --fail --location --retry 3 --continue-at - --output "$UPX_FILE.part" "$FIRMWARE_URL"
+  fi
   mv "$UPX_FILE.part" "$UPX_FILE"
 fi
 [[ "$(sha256_file "$UPX_FILE")" == "$UPX_SHA256" ]] || { echo "OTA checksum mismatch" >&2; exit 1; }
