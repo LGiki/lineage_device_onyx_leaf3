@@ -87,8 +87,10 @@ constexpr useconds_t kRetryDelayUs = 1000000;
 constexpr uint32_t kIdleThresholdFrames = 10;
 constexpr uint32_t kCleanupAfterUnchangedFrames = 4;
 constexpr uint32_t kFastCleanupInterval = 20;
+constexpr uint32_t kInputProbeFrames = 6;
 constexpr char kRefreshModeProperty[] = "persist.sys.leaf3.refresh_mode";
 constexpr char kFullRefreshProperty[] = "sys.leaf3.full_refresh";
+constexpr char kClearOnSleepProperty[] = "persist.sys.leaf3.clear_on_sleep";
 constexpr char kTouchInputName[] = "cyttsp5_mt";
 
 struct EbcBufferInfo {
@@ -493,6 +495,33 @@ public:
     return true;
   }
 
+  bool clear() {
+    if (buffer_ == MAP_FAILED) {
+      return false;
+    }
+
+    // E-Ink retains its last image without power. Replace the application
+    // frame with white before Android suspends so an asleep device cannot look
+    // like an unresponsive, still-open application.
+    memset(buffer_, 0xff, buffer_size_);
+
+    EbcUpdate update = {};
+    update.width = width_;
+    update.height = height_;
+    update.waveform_mode = kWaveformGc16;
+    update.update_mode = kUpdateFull;
+    update.update_marker = marker_++;
+    update.temperature = kEbcAutoTemperature;
+    update.flags = kEbcDitherFlag;
+
+    if (ioctl(fd_, kEbcSendUpdate, &update) < 0) {
+      ALOGE("EBC sleep clear marker=%u failed: %s", update.update_marker,
+            strerror(errno));
+      return false;
+    }
+    return true;
+  }
+
 private:
   int fd_ = -1;
   void *buffer_ = MAP_FAILED;
@@ -575,6 +604,7 @@ int main() {
   bool first_refresh = true;
   bool display_was_on = true;
   bool input_activity = false;
+  uint32_t input_probe_frames = 0;
   uint32_t unchanged_frames = 0;
   uint32_t fast_update_count = 0;
   std::optional<ChangedRect> cleanup_rect;
@@ -589,12 +619,17 @@ int main() {
     const bool display_on = frontlight.update();
     if (!display_on) {
       if (display_was_on) {
+        if (initialized && getIntegerProperty(kClearOnSleepProperty, 1) != 0) {
+          ALOGI("display is off; clearing retained frame");
+          ebc.clear();
+        }
         ALOGI("display is off; suspending SurfaceFlinger capture");
         display_was_on = false;
         previous.clear();
         first_refresh = true;
         unchanged_frames = 0;
         fast_update_count = 0;
+        input_probe_frames = 0;
         cleanup_rect.reset();
       }
       input_activity = input_wake.wait(kIdleFrameDelayUs);
@@ -604,6 +639,7 @@ int main() {
       ALOGI("display is on; resuming with a full refresh");
       display_was_on = true;
       first_refresh = true;
+      input_probe_frames = kInputProbeFrames;
     }
 
     Dataspace dataspace;
@@ -672,6 +708,7 @@ int main() {
     if (changed) {
       uint32_t waveform = kWaveformAuto;
       bool needs_cleanup = false;
+      const bool interaction_active = input_activity || input_probe_frames > 0;
       switch (refresh_mode) {
       case RefreshMode::kSpeed:
         waveform = kWaveformDu;
@@ -685,7 +722,7 @@ int main() {
         waveform = kWaveformRegal;
         break;
       case RefreshMode::kBalanced:
-        if (input_activity || fast_update_count > 0) {
+        if (interaction_active || fast_update_count > 0) {
           waveform = kWaveformAnim;
           needs_cleanup = true;
         }
@@ -728,11 +765,20 @@ int main() {
     }
 
     buffer->unlock();
-    const useconds_t delay = unchanged_frames >= kIdleThresholdFrames
-                                 ? kIdleFrameDelayUs
-                                 : activeFrameDelay(refresh_mode);
+    const bool probing_for_input_frame = input_probe_frames > 0;
+    const useconds_t delay =
+        unchanged_frames >= kIdleThresholdFrames && !probing_for_input_frame
+            ? kIdleFrameDelayUs
+            : activeFrameDelay(refresh_mode);
+    if (input_probe_frames > 0) {
+      --input_probe_frames;
+    }
     input_activity = input_wake.wait(delay);
     if (input_activity) {
+      // Some applications publish their new frame well after the initial
+      // touch. Keep capturing at the active cadence long enough to catch it
+      // instead of immediately falling back to the 500 ms idle interval.
+      input_probe_frames = kInputProbeFrames;
       // Let InputDispatcher and SurfaceFlinger publish the frame caused by the
       // event before taking the screenshot.
       usleep(kTouchSettleDelayUs);

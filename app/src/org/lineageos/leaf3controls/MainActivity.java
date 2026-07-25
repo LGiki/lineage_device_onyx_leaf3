@@ -16,6 +16,8 @@ import android.widget.Toast;
 public final class MainActivity extends Activity {
   private static final String REFRESH_MODE = "persist.sys.leaf3.refresh_mode";
   private static final String FULL_REFRESH = "sys.leaf3.full_refresh";
+  private static final String CLEAR_ON_SLEEP =
+      "persist.sys.leaf3.clear_on_sleep";
   private static final String FRONTLIGHT_ENABLED =
       "persist.sys.leaf3.frontlight_enabled";
   private static final String FRONTLIGHT_BRIGHTNESS =
@@ -38,6 +40,7 @@ public final class MainActivity extends Activity {
     final RadioGroup refreshModes = findViewById(R.id.refresh_modes);
     final Switch frontlightEnabled = findViewById(R.id.frontlight_enabled);
     final Switch disableAnimations = findViewById(R.id.disable_animations);
+    final Switch clearOnSleep = findViewById(R.id.clear_on_sleep);
     followAndroidBrightness = findViewById(R.id.follow_android_brightness);
     brightness = findViewById(R.id.brightness);
     temperature = findViewById(R.id.temperature);
@@ -54,6 +57,7 @@ public final class MainActivity extends Activity {
     frontlightEnabled.setChecked(
         SystemProperties.getInt(FRONTLIGHT_ENABLED, 1) != 0);
     disableAnimations.setChecked(animationsDisabled());
+    clearOnSleep.setChecked(SystemProperties.getInt(CLEAR_ON_SLEEP, 1) != 0);
     followAndroidBrightness.setChecked(brightnessOverride < 0);
     brightness.setProgress(brightnessOverride < 0 ? 50 : brightnessOverride);
     brightness.setEnabled(brightnessOverride >= 0);
@@ -98,6 +102,16 @@ public final class MainActivity extends Activity {
           public void onCheckedChanged(CompoundButton button, boolean checked) {
             if (!loading) {
               setAnimationsDisabled(checked);
+            }
+          }
+        });
+
+    clearOnSleep.setOnCheckedChangeListener(
+        new CompoundButton.OnCheckedChangeListener() {
+          @Override
+          public void onCheckedChanged(CompoundButton button, boolean checked) {
+            if (!loading) {
+              setProperty(CLEAR_ON_SLEEP, checked ? "1" : "0");
             }
           }
         });

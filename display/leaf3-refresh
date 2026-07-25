@@ -2,9 +2,10 @@
 
 mode_property=persist.sys.leaf3.refresh_mode
 refresh_property=sys.leaf3.full_refresh
+clear_on_sleep_property=persist.sys.leaf3.clear_on_sleep
 
 usage() {
-    echo "usage: leaf3-refresh {balanced|normal|speed|a2|regal|full|animations-off|animations-on|status}" >&2
+    echo "usage: leaf3-refresh {balanced|normal|speed|a2|regal|full|clear-on-sleep|retain-on-sleep|animations-off|animations-on|status}" >&2
     exit 2
 }
 
@@ -20,6 +21,14 @@ case "${1:-status}" in
         setprop "$refresh_property" "$token"
         echo "Leaf3 full refresh requested"
         ;;
+    clear-on-sleep)
+        setprop "$clear_on_sleep_property" 1
+        echo "Leaf3 will clear the retained frame while sleeping"
+        ;;
+    retain-on-sleep)
+        setprop "$clear_on_sleep_property" 0
+        echo "Leaf3 will retain the last frame while sleeping"
+        ;;
     animations-off)
         settings put global window_animation_scale 0
         settings put global transition_animation_scale 0
@@ -34,7 +43,9 @@ case "${1:-status}" in
         ;;
     status)
         mode="$(getprop "$mode_property")"
+        clear_on_sleep="$(getprop "$clear_on_sleep_property")"
         echo "Leaf3 refresh mode: ${mode:-balanced}"
+        echo "Clear retained frame on sleep: ${clear_on_sleep:-1}"
         ;;
     *)
         usage

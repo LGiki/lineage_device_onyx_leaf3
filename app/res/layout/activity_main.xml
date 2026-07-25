@@ -101,6 +101,14 @@
             android:textColor="#000000"
             android:textSize="18sp" />
 
+        <Switch
+            android:id="@+id/clear_on_sleep"
+            android:layout_width="match_parent"
+            android:layout_height="64dp"
+            android:text="@string/clear_on_sleep"
+            android:textColor="#000000"
+            android:textSize="18sp" />
+
         <View
             android:layout_width="match_parent"
             android:layout_height="1dp"

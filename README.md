@@ -459,6 +459,13 @@ now uses the correct ABI order. Speed and A2 poll compositor changes every
 80 ms while content remains active, Balanced uses 100 ms, and the slower
 Normal and Regal quality modes use 140 ms.
 
+After any touch event, the bridge keeps the active capture cadence for six
+frames. Reader applications such as KOReader may publish a completed page
+later than the initial 32 ms touch-settle delay; without this probe burst, a
+missed first capture falls immediately back to the 500 ms idle interval.
+Balanced treats a frame found during the burst as interaction, displays it
+quickly with A2, then performs the usual GC16 cleanup after the page settles.
+
 For partial updates, unchanged rows are rejected with an optimized memory
 comparison. Only the changed bounding rectangle is copied into the persistent
 EBC framebuffer and previous-frame cache. Earlier revisions copied the entire
@@ -552,6 +559,19 @@ backlight/input state until Android wakes, then resumes with one full GC16
 refresh. This avoids spending CPU and battery taking two full-screen
 screenshots per second while the device is asleep.
 
+E-Ink retains its last image without power. By default the bridge replaces
+that image with a white GC16 frame when Android turns the display off. Without
+this step, KOReader's last page remains visible while Android is asleep, which
+makes the navigation bar and notification shade appear frozen even though
+input is correctly disabled. A second power-button press wakes Android and the
+bridge then displays the current Android frame with a full refresh. Retaining
+the last page is still available as an explicit preference:
+
+```sh
+adb shell leaf3-refresh clear-on-sleep
+adb shell leaf3-refresh retain-on-sleep
+```
+
 After rebuilding and flashing the new `system.img` and matching `vbmeta.img`,
 verify the mapping:
 
@@ -605,6 +625,7 @@ It provides:
 - A manual frontlight percentage override.
 - Cool-to-warm color-temperature control.
 - A switch to disable Android window, transition, and animator effects.
+- A switch to clear the retained application frame while sleeping.
 
 The controls use the same persistent properties as `leaf3-refresh` and
 `leaf3-frontlight`, so changes made in the app are visible to the command-line
@@ -649,6 +670,28 @@ adb shell dumpsys SurfaceFlinger --list | grep NavigationBar
 
 The expected resource value is `true`, the interaction mode is `0`, and at
 least one `NavigationBar` layer should be listed.
+
+### KOReader remains visible after pressing power
+
+The E-Ink panel retaining KOReader's page does not mean Android is still
+awake. While `dumpsys power` reports `mWakefulness=Asleep`, Android disables
+touch dispatch and hides the navigation and status bars. Press power again to
+wake the device; touch alone is not configured as a system wake source.
+
+Android's framework default enables Keyguard, and this tree clears the retained
+panel frame on sleep. A device preserving stock or older ROM user data can
+still carry a per-user locksettings override in `/data`. Fix that once without
+erasing user data:
+
+```sh
+adb shell locksettings set-disabled false
+adb shell locksettings get-disabled
+```
+
+The final command must print `false`. After rebuilding, flash `system.img`,
+`system_ext.img`, and their matching `vbmeta.img`. The framework overlay and
+EPDC bridge are in `system.img`; the Leaf3 Controls switch is in
+`system_ext.img`.
 
 Android's default window and transition animation scales are both `1.0`.
 Animations generate many intermediate frames and ghosting without adding much
