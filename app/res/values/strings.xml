@@ -1,0 +1,19 @@
+<resources>
+    <string name="app_name">Leaf3 Controls</string>
+    <string name="screen_refresh">Screen refresh</string>
+    <string name="refresh_description">Choose image quality or interaction speed. Balanced is recommended for general use.</string>
+    <string name="balanced">Balanced</string>
+    <string name="normal">Normal</string>
+    <string name="speed">Speed</string>
+    <string name="a2">A2</string>
+    <string name="regal">Regal</string>
+    <string name="full_refresh">Clean screen now</string>
+    <string name="frontlight">Frontlight</string>
+    <string name="frontlight_enabled">Frontlight enabled</string>
+    <string name="follow_android_brightness">Follow Android brightness slider</string>
+    <string name="manual_brightness">Manual brightness: %1$d%%</string>
+    <string name="color_temperature">Warm color: %1$d%%</string>
+    <string name="cool">Cool</string>
+    <string name="warm">Warm</string>
+    <string name="property_error">Could not apply %1$s</string>
+</resources>

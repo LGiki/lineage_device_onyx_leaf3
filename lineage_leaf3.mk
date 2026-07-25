@@ -2,6 +2,16 @@ $(call inherit-product, $(SRC_TARGET_DIR)/product/core_64_bit.mk)
 $(call inherit-product, $(SRC_TARGET_DIR)/product/full_base.mk)
 $(call inherit-product, device/onyx/leaf3/device.mk)
 
+# Temporary bring-up setting: the panel cannot show Android's ADB
+# authorization dialog yet. Remove this before producing a distributable ROM.
+WITH_ADB_INSECURE := true
+
+# Include the Lineage framework resources and the compact tablet package set.
+# The mini profile is intentional: Leaf3's system partition is only 877 MiB.
+# Without a Lineage common profile, framework-res references
+# org.lineageos.platform-res.apk but the APK is not installed, so zygote exits.
+$(call inherit-product, vendor/lineage/config/common_mini_tablet_wifionly.mk)
+
 PRODUCT_DEVICE := leaf3
 PRODUCT_NAME := lineage_leaf3
 PRODUCT_BRAND := ONYX

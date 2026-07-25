@@ -1,0 +1,81 @@
+#!/system/bin/sh
+
+BRIGHTNESS_PATH=/sys/class/backlight/onyx_bl_br/brightness
+BRIGHTNESS_MAX_PATH=/sys/class/backlight/onyx_bl_br/max_brightness
+TEMPERATURE_PATH=/sys/class/backlight/onyx_bl_ct/brightness
+TEMPERATURE_MAX_PATH=/sys/class/backlight/onyx_bl_ct/max_brightness
+ENABLED_PROPERTY=persist.sys.leaf3.frontlight_enabled
+BRIGHTNESS_PROPERTY=persist.sys.leaf3.frontlight_brightness
+TEMPERATURE_PROPERTY=persist.sys.leaf3.frontlight_temperature
+
+usage() {
+    echo "usage: leaf3-frontlight brightness <0-100>"
+    echo "       leaf3-frontlight temperature <0-100>"
+    echo "       leaf3-frontlight auto|cool|warm|on|off|status"
+}
+
+valid_percent() {
+    case "$1" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$1" -ge 0 ] && [ "$1" -le 100 ]
+}
+
+property_or_default() {
+    property_value=$(getprop "$1")
+    if [ -n "$property_value" ]; then
+        echo "$property_value"
+    else
+        echo "$2"
+    fi
+}
+
+case "$1" in
+    brightness)
+        if ! valid_percent "$2"; then
+            usage
+            exit 2
+        fi
+        if [ "$2" -eq 0 ]; then
+            setprop "$ENABLED_PROPERTY" 0
+        else
+            setprop "$ENABLED_PROPERTY" 1
+            setprop "$BRIGHTNESS_PROPERTY" "$2"
+        fi
+        ;;
+    auto)
+        setprop "$BRIGHTNESS_PROPERTY" -1
+        setprop "$ENABLED_PROPERTY" 1
+        ;;
+    temperature)
+        if ! valid_percent "$2"; then
+            usage
+            exit 2
+        fi
+        setprop "$TEMPERATURE_PROPERTY" "$2"
+        ;;
+    cool)
+        setprop "$TEMPERATURE_PROPERTY" 0
+        ;;
+    warm)
+        setprop "$TEMPERATURE_PROPERTY" 100
+        ;;
+    on)
+        setprop "$ENABLED_PROPERTY" 1
+        ;;
+    off)
+        setprop "$ENABLED_PROPERTY" 0
+        ;;
+    status)
+        echo "Android brightness: $(settings get system screen_brightness)/255"
+        echo "Frontlight brightness: $(cat "$BRIGHTNESS_PATH")/$(cat "$BRIGHTNESS_MAX_PATH")"
+        echo "Color temperature: $(cat "$TEMPERATURE_PATH")/$(cat "$TEMPERATURE_MAX_PATH")"
+        echo "Frontlight enabled: $(property_or_default "$ENABLED_PROPERTY" 1)"
+        echo "Brightness override: $(property_or_default "$BRIGHTNESS_PROPERTY" -1)% (-1 means Android slider)"
+        echo "Color temperature setting: $(property_or_default "$TEMPERATURE_PROPERTY" 0)%"
+        ;;
+    *)
+        usage
+        exit 2
+        ;;
+esac

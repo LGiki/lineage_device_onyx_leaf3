@@ -6,7 +6,6 @@ readonly LINEAGE_MANIFEST="https://github.com/LineageOS/android.git"
 readonly LINEAGE_BRANCH="lineage-18.1"
 readonly PRODUCT_OUT_REL="out/target/product/leaf3"
 readonly REQUIRED_FREE_GIB=200
-readonly INCREMENTAL_FREE_GIB=80
 
 SOURCE_DIR=""
 BUILD_JOBS="$(nproc)"
@@ -17,6 +16,7 @@ PROXY_URL="${BUILD_PROXY:-}"
 HTTP_PROXY_URL=""
 HTTPS_PROXY_URL=""
 NO_PROXY_VALUE=""
+ADB_PUBLIC_KEY=""
 INSTALL_DEPS=0
 SKIP_SYNC=0
 SYNC_RETRIES=3
@@ -30,6 +30,7 @@ Usage:
 
 Required:
   --source-dir PATH       LineageOS checkout/build directory
+  --adb-public-key PATH   Public key for the computer that will run ADB
 
 Options:
   -j, --jobs N            Parallel build jobs (default: all logical CPUs)
@@ -50,9 +51,12 @@ Proxy values may also be supplied through BUILD_PROXY, http_proxy,
 https_proxy, and no_proxy. CLI options take precedence.
 
 Examples:
-  ./build-lineage-arch.sh --source-dir /srv/android/lineage-18.1
   ./build-lineage-arch.sh --source-dir /srv/android/lineage-18.1 \
-    --proxy http://127.0.0.1:7890 --sync-jobs 2 -j 12
+    --adb-public-key /srv/keys/leaf3-adbkey.pub
+  ./build-lineage-arch.sh --source-dir /srv/android/lineage-18.1 \
+    --proxy http://127.0.0.1:7890 \
+    --adb-public-key /srv/keys/leaf3-adbkey.pub \
+    --sync-jobs 2 -j 12
 EOF
 }
 
@@ -146,6 +150,11 @@ while (($#)); do
       NO_PROXY_VALUE="$2"
       shift 2
       ;;
+    --adb-public-key)
+      (($# >= 2)) || die "--adb-public-key requires a value"
+      ADB_PUBLIC_KEY="$2"
+      shift 2
+      ;;
     --install-deps)
       INSTALL_DEPS=1
       shift
@@ -174,6 +183,20 @@ is_positive_integer "$DOWNLOAD_CONNECTIONS" || \
   die "--download-connections must be an integer from 1 to 16"
 [[ "$CCACHE_SIZE" =~ ^[1-9][0-9]*([KMGTP]([iI]?[bB])?)?$ ]] || \
   die "--ccache-size must look like 30G"
+
+if [[ -n "$ADB_PUBLIC_KEY" ]]; then
+  [[ -f "$ADB_PUBLIC_KEY" && -r "$ADB_PUBLIC_KEY" ]] || \
+    die "ADB public key is not a readable regular file: $ADB_PUBLIC_KEY"
+  ADB_PUBLIC_KEY="$(cd -- "$(dirname -- "$ADB_PUBLIC_KEY")" && pwd)/$(basename -- "$ADB_PUBLIC_KEY")"
+elif [[ -f "$SCRIPT_DIR/debug-adb-key.pub" ]]; then
+  ADB_PUBLIC_KEY="$SCRIPT_DIR/debug-adb-key.pub"
+else
+  die "an ADB public key is required; pass --adb-public-key with the adbkey.pub from the computer that will debug the device"
+fi
+[[ "$(wc -l < "$ADB_PUBLIC_KEY")" -le 2 ]] || \
+  die "ADB key file has unexpected content; pass the public adbkey.pub, never the private adbkey"
+grep -Eq '^[A-Za-z0-9+/=]+([[:space:]]+[^[:space:]]+)?[[:space:]]*$' "$ADB_PUBLIC_KEY" || \
+  die "invalid ADB public key format: $ADB_PUBLIC_KEY"
 
 [[ "$(uname -s)" == "Linux" ]] || die "this script requires Linux"
 [[ "$(uname -m)" == "x86_64" ]] || die "this script requires an x86_64 host"
@@ -241,16 +264,13 @@ readonly STOCK_CACHE_DIR="$SOURCE_DIR/.leaf3-cache/stock"
 readonly STOCK_IMAGES_DIR="$SOURCE_DIR/.leaf3-cache/stock-images"
 readonly CCACHE_DIR_PATH="${CCACHE_DIR:-$SOURCE_DIR/.ccache}"
 
-available_kib="$(df -Pk "$SOURCE_DIR" | awk 'NR == 2 {print $4}')"
-if [[ -d "$SOURCE_DIR/.repo" ]]; then
-  minimum_free_gib="$INCREMENTAL_FREE_GIB"
-else
-  minimum_free_gib="$REQUIRED_FREE_GIB"
-fi
-required_kib=$((minimum_free_gib * 1024 * 1024))
-if ((available_kib < required_kib)); then
-  available_gib=$((available_kib / 1024 / 1024))
-  die "only ${available_gib} GiB is free at $SOURCE_DIR; at least ${minimum_free_gib} GiB is required"
+if [[ ! -d "$SOURCE_DIR/.repo" ]]; then
+  available_kib="$(df -Pk "$SOURCE_DIR" | awk 'NR == 2 {print $4}')"
+  required_kib=$((REQUIRED_FREE_GIB * 1024 * 1024))
+  if ((available_kib < required_kib)); then
+    available_gib=$((available_kib / 1024 / 1024))
+    die "only ${available_gib} GiB is free at $SOURCE_DIR; at least ${REQUIRED_FREE_GIB} GiB is required for a new checkout"
+  fi
 fi
 
 if ((SKIP_SYNC == 0)); then
@@ -299,6 +319,16 @@ if [[ "$SCRIPT_DIR" != "$TARGET_DEVICE_DIR" ]]; then
     --exclude='stock-images/' \
     "$SCRIPT_DIR/" "$TARGET_DEVICE_DIR/"
 fi
+if [[ "$ADB_PUBLIC_KEY" != "$TARGET_DEVICE_DIR/debug-adb-key.pub" ]]; then
+  cp -- "$ADB_PUBLIC_KEY" "$TARGET_DEVICE_DIR/debug-adb-key.pub"
+fi
+
+log "Patching the LineageOS 18.1 SystemUI AssistManager threading bug"
+readonly ASSIST_MANAGER_SOURCE="$SOURCE_DIR/frameworks/base/packages/SystemUI/src/com/android/systemui/assist/AssistManager.java"
+[[ -f "$ASSIST_MANAGER_SOURCE" ]] || \
+  die "missing SystemUI AssistManager source: $ASSIST_MANAGER_SOURCE"
+python3 "$TARGET_DEVICE_DIR/tools/patch-systemui-assist-handler.py" \
+  "$ASSIST_MANAGER_SOURCE"
 
 log "Downloading and extracting checksum-pinned stock boot inputs"
 mkdir -p "$STOCK_CACHE_DIR" "$STOCK_IMAGES_DIR"
@@ -336,6 +366,13 @@ export PATH="$JAVA_HOME/bin:$PATH"
     productimage \
     systemextimage \
     vbmetaimage
+
+  # The preserved ONYX 4.19 kernel deliberately enables CONFIG_PM_AUTOSLEEP.
+  # Patch only its generated FCM 5 block, matching the stock system matrix,
+  # then rebuild the two images whose hashes are affected.
+  python3 "$TARGET_DEVICE_DIR/tools/patch-vintf-kernel-matrix.py" \
+    "$SOURCE_DIR/$PRODUCT_OUT_REL/system/etc/vintf/compatibility_matrix.5.xml"
+  mka -j"$BUILD_JOBS" systemimage vbmetaimage
 )
 
 log "Verifying build outputs"
@@ -347,6 +384,24 @@ readonly OUTPUT_FILES=(boot.img dtbo.img system.img product.img system_ext.img v
 for output_file in "${OUTPUT_FILES[@]}"; do
   [[ -s "$PRODUCT_OUT/$output_file" ]] || die "missing build output: $output_file"
 done
+[[ -s "$PRODUCT_OUT/system/framework/org.lineageos.platform-res.apk" ]] || \
+  die "system is missing org.lineageos.platform-res.apk; the product must inherit the Lineage common configuration"
+[[ -x "$PRODUCT_OUT/system/bin/leaf3_epdc_bridge" ]] || \
+  die "system is missing the Leaf3 SurfaceFlinger-to-EPDC display bridge"
+[[ -s "$PRODUCT_OUT/system/etc/init/leaf3_epdc_bridge.rc" ]] || \
+  die "system is missing the Leaf3 EPDC bridge init service"
+[[ -x "$PRODUCT_OUT/system/bin/leaf3-refresh" ]] || \
+  die "system is missing the Leaf3 refresh-mode control tool"
+[[ -x "$PRODUCT_OUT/system/bin/leaf3-frontlight" ]] || \
+  die "system is missing the Leaf3 frontlight control tool"
+[[ -s "$PRODUCT_OUT/system_ext/priv-app/Leaf3Controls/Leaf3Controls.apk" ]] || \
+  die "system_ext is missing the Leaf3 Controls app"
+python3 "$TARGET_DEVICE_DIR/tools/patch-systemui-assist-handler.py" --check \
+  "$ASSIST_MANAGER_SOURCE"
+python3 "$TARGET_DEVICE_DIR/tools/patch-vintf-kernel-matrix.py" --check \
+  "$PRODUCT_OUT/system/etc/vintf/compatibility_matrix.5.xml"
+grep -Fxq 'ro.adb.secure=0' "$PRODUCT_OUT/system/etc/prop.default" || \
+  die "bring-up build did not disable ADB authentication in system/etc/prop.default"
 [[ "$(stat -c %s "$PRODUCT_OUT/boot.img")" -le 100663296 ]] || \
   die "boot.img exceeds the 96 MiB partition size"
 [[ "$(stat -c %s "$PRODUCT_OUT/dtbo.img")" -le 25165824 ]] || \
@@ -364,6 +419,18 @@ gzip -dc "$VERIFY_DIR/ramdisk" | cpio -t > "$RAMDISK_LIST"
 grep -Fxq 'fstab.emmc' "$RAMDISK_LIST" || die "boot ramdisk is missing fstab.emmc"
 grep -Fxq 'waveform/eink_waveform.wbf' "$RAMDISK_LIST" || \
   die "boot ramdisk is missing the e-ink waveform"
+grep -Fxq 'adb_keys' "$RAMDISK_LIST" || \
+  die "boot ramdisk is missing the configured debug ADB key"
+readonly VERIFY_RAMDISK_DIR="$VERIFY_DIR/ramdisk-root"
+mkdir -p "$VERIFY_RAMDISK_DIR"
+(
+  cd "$VERIFY_RAMDISK_DIR"
+  gzip -dc "$VERIFY_DIR/ramdisk" | cpio -idm fstab.emmc adb_keys 2>/dev/null
+)
+[[ -f "$VERIFY_RAMDISK_DIR/fstab.emmc" && ! -L "$VERIFY_RAMDISK_DIR/fstab.emmc" ]] || \
+  die "boot ramdisk fstab.emmc is missing or is not a regular file"
+cmp "$VERIFY_RAMDISK_DIR/fstab.emmc" "$TARGET_DEVICE_DIR/rootdir/etc/fstab.emmc"
+cmp "$VERIFY_RAMDISK_DIR/adb_keys" "$TARGET_DEVICE_DIR/debug-adb-key.pub"
 
 (
   cd "$PRODUCT_OUT"

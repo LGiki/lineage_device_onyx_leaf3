@@ -49,12 +49,27 @@ verification:
 ```sh
 ./build-lineage-arch.sh \
   --source-dir /srv/android/lineage-18.1 \
+  --adb-public-key /srv/keys/leaf3-adbkey.pub \
   --install-deps \
   --jobs 12
 ```
 
 Do not run the build as root. The source directory must be writable by the
 build user. The initial sync and build can take several hours.
+
+`--adb-public-key` must point to the public `adbkey.pub` belonging to the
+computer that will debug the device. For example, copy
+`~/.android/adbkey.pub` from the macOS debugging computer to a protected
+location on the Arch build server. Never copy or pass the private `adbkey`
+file. The public key is embedded as `/adb_keys` in `boot.img`; the build stops
+if the key is absent or does not match.
+
+During display bring-up, `lineage_leaf3.mk` also sets
+`WITH_ADB_INSECURE := true`, making `ro.adb.secure=0`. This allows ADB access
+when the panel cannot show the authorization dialog. It is intentionally
+unsafe and must be removed before distributing a ROM or using the device on an
+untrusted USB connection. The embedded public key remains in place so
+authenticated ADB can be restored later.
 
 The script:
 
@@ -85,6 +100,7 @@ stock images, and ccache. To build without contacting the source remotes:
 ```sh
 ./build-lineage-arch.sh \
   --source-dir /srv/android/lineage-18.1 \
+  --adb-public-key /srv/keys/leaf3-adbkey.pub \
   --skip-sync \
   --jobs 12
 ```
@@ -97,6 +113,7 @@ firmware, Git, curl, and Python package downloads:
 ```sh
 ./build-lineage-arch.sh \
   --source-dir /srv/android/lineage-18.1 \
+  --adb-public-key /srv/keys/leaf3-adbkey.pub \
   --proxy http://127.0.0.1:7890 \
   --download-connections 8 \
   --sync-jobs 2 \
@@ -115,7 +132,10 @@ value in the command itself:
 ```sh
 read -rsp 'Proxy URL: ' BUILD_PROXY
 export BUILD_PROXY
-./build-lineage-arch.sh --source-dir /srv/android/lineage-18.1 --jobs 12
+./build-lineage-arch.sh \
+  --source-dir /srv/android/lineage-18.1 \
+  --adb-public-key /srv/keys/leaf3-adbkey.pub \
+  --jobs 12
 unset BUILD_PROXY
 ```
 
@@ -124,6 +144,7 @@ Separate proxies and exclusions can also be configured:
 ```sh
 ./build-lineage-arch.sh \
   --source-dir /srv/android/lineage-18.1 \
+  --adb-public-key /srv/keys/leaf3-adbkey.pub \
   --http-proxy http://proxy.example:3128 \
   --https-proxy http://proxy.example:3128 \
   --no-proxy localhost,127.0.0.1,.example.internal
@@ -155,7 +176,582 @@ mka bootimage dtboimage systemimage productimage systemextimage vbmetaimage
 The generated files under `prebuilt/`, the stock images, and the stock OTA
 cache are ignored by Git.
 
+## Flashing the experimental build
+
+> [!CAUTION]
+> This is an untested first-boot bring-up, not a finished ROM release. Flashing
+> can erase all user data or leave the device unable to boot. Do not proceed
+> without an unlocked bootloader, a known-working recovery/EDL path, and
+> verified backups of the complete stock firmware and both slots.
+
+Install a recent Android platform-tools package on the host:
+
+```sh
+sudo pacman -S android-tools
+```
+
+The build intentionally preserves the stock `vendor` partition and does not
+produce an OTA ZIP. Never flash or erase `vendor`, `super`, `recovery`,
+`vbmeta_system`, `persist`, or `onyxconfig` using these instructions.
+
+The BOOX bootloader fastboot implementation may reject partition writes.
+The procedure below does not depend on bootloader-fastboot flashing: it uses
+TWRP fastbootd for dynamic logical partitions and TWRP's root ADB shell for
+the physical boot-chain partitions. Fastbootd is a userspace service inside
+recovery and is different from bootloader fastboot.
+
+### 1. Verify the images and preserve stock partitions
+
+```sh
+ROM_DIR=/home/lgiki/leaf3-build/out/target/product/leaf3
+cd "$ROM_DIR"
+sha256sum -c lineage-leaf3-images.sha256sum
+```
+
+Before changing partitions, use the confirmed-working Leaf3/Page TWRP or an
+EDL workflow to copy at least these stock partitions to another machine:
+
+```text
+boot_a, boot_b
+dtbo_a, dtbo_b
+vbmeta_a, vbmeta_b
+vbmeta_system_a, vbmeta_system_b
+recovery_a, recovery_b
+super
+persist
+onyxconfig
+```
+
+Also back up personal files. Bootloader unlocking and the factory reset below
+erase user data. The stock OTA cached by the build is not a substitute for a
+backup of the exact firmware currently installed on the device.
+
+### 2. Boot TWRP and choose a slot
+
+Boot the confirmed-working Leaf3/Page TWRP, connect ADB, and inspect the active
+slot and partition nodes:
+
+```sh
+adb devices
+adb shell getprop ro.boot.slot_suffix
+adb shell ls -l /dev/block/bootdevice/by-name/boot_a
+adb shell ls -l /dev/block/bootdevice/by-name/boot_b
+```
+
+Stop if ADB is not running as root in TWRP, the slot suffix is missing, or any
+required partition node is absent. TWRP does not bypass AVB signature
+enforcement: the bootloader must already be unlocked or otherwise accept the
+test vbmeta image.
+
+Set the target explicitly after reading `ro.boot.slot_suffix`. Using the
+current slot keeps the currently booted stock vendor, but overwrites that
+slot's working boot and system partitions:
+
+```sh
+TARGET_SLOT=a  # Change to the slot you intentionally selected.
+```
+
+Using the inactive slot preserves a bootable fallback only if that slot has a
+complete, matching stock vendor partition. Do not assume its vendor is valid
+or matches the pinned boot inputs.
+
+### 3. Flash logical partitions through TWRP fastbootd
+
+In TWRP, select **Advanced → Enter Fastboot**, or run:
+
+```sh
+adb reboot fastboot
+```
+
+This switches recovery into fastbootd. Confirm that the host sees userspace
+fastboot and that all target partitions are logical:
+
+```sh
+fastboot devices
+fastboot getvar is-userspace
+fastboot getvar "is-logical:system_${TARGET_SLOT}"
+fastboot getvar "is-logical:product_${TARGET_SLOT}"
+fastboot getvar "is-logical:system_ext_${TARGET_SLOT}"
+```
+
+All three `is-logical` checks must report `yes`. Flash only the generated
+logical images:
+
+```sh
+fastboot --slot "$TARGET_SLOT" flash system "$ROM_DIR/system.img"
+fastboot --slot "$TARGET_SLOT" flash product "$ROM_DIR/product.img"
+fastboot --slot "$TARGET_SLOT" flash system_ext "$ROM_DIR/system_ext.img"
+```
+
+Do not use `--force`, delete logical partitions, resize partitions manually, or
+flash the physical `super` partition. Stop and restore the stock backup if any
+image does not fit.
+
+### 4. Write the physical boot chain from TWRP
+
+Return directly from fastbootd to TWRP recovery:
+
+```sh
+fastboot reboot recovery
+adb wait-for-device
+```
+
+Copy the small physical images to TWRP's RAM-backed `/tmp`:
+
+```sh
+adb push "$ROM_DIR/boot.img" /tmp/boot.img
+adb push "$ROM_DIR/dtbo.img" /tmp/dtbo.img
+adb push "$ROM_DIR/vbmeta.img" /tmp/vbmeta.img
+```
+
+Before writing, verify that the selected block devices exist and are large
+enough:
+
+```sh
+adb shell "blockdev --getsize64 /dev/block/bootdevice/by-name/boot_${TARGET_SLOT}"
+adb shell "blockdev --getsize64 /dev/block/bootdevice/by-name/dtbo_${TARGET_SLOT}"
+adb shell "blockdev --getsize64 /dev/block/bootdevice/by-name/vbmeta_${TARGET_SLOT}"
+stat -c '%n %s' "$ROM_DIR/boot.img" "$ROM_DIR/dtbo.img" "$ROM_DIR/vbmeta.img"
+```
+
+Each block-device size must be greater than or equal to its image size. Write
+only the explicitly selected slot:
+
+```sh
+adb shell "dd if=/tmp/boot.img of=/dev/block/bootdevice/by-name/boot_${TARGET_SLOT} bs=4096"
+adb shell "dd if=/tmp/dtbo.img of=/dev/block/bootdevice/by-name/dtbo_${TARGET_SLOT} bs=4096"
+adb shell "dd if=/tmp/vbmeta.img of=/dev/block/bootdevice/by-name/vbmeta_${TARGET_SLOT} bs=4096"
+adb shell sync
+```
+
+Do not use `dd` for `system.img`, `product.img`, or `system_ext.img`; those are
+sparse images for logical partitions and must be handled by fastbootd. The
+generated `vbmeta.img` already has AVB verification disabled. Do not relock the
+bootloader while any test image is installed.
+
+### 5. Factory reset, activate the slot, and boot
+
+Changing platform signing keys generally makes the stock encrypted data
+incompatible. Re-enter TWRP fastbootd:
+
+```sh
+adb reboot fastboot
+fastboot getvar is-userspace
+```
+
+The following command irreversibly formats user data and metadata:
+
+```sh
+fastboot -w
+fastboot set_active "$TARGET_SLOT"
+fastboot reboot
+```
+
+If `fastboot -w` is unsupported, return to TWRP, use **Wipe → Format Data**,
+then re-enter fastbootd to run `fastboot set_active "$TARGET_SLOT"` and
+`fastboot reboot`.
+
+Allow extra time for the first boot. If the device reaches ADB, immediately
+collect diagnostics:
+
+```sh
+adb wait-for-device
+adb shell getprop > leaf3-getprop.txt
+adb logcat -b all -d > leaf3-logcat.txt
+adb shell dmesg > leaf3-dmesg.txt
+```
+
+### Roll back
+
+If an untouched slot contains a complete matching stock installation, return
+to TWRP fastbootd and activate it:
+
+```sh
+adb reboot fastboot
+fastboot set_active a  # Replace with the known-good stock slot.
+fastboot reboot
+```
+
+Otherwise, restore the exact saved `boot`, `dtbo`, `vbmeta`, and logical
+partition data for the affected slot using TWRP/fastbootd or restore the full
+stock firmware through the previously tested EDL procedure. Do not experiment
+with slot switching after the bootloader marks slots unbootable; restore the
+matching images and explicitly set the known-good slot.
+
 ## Troubleshooting
+
+### Blank screen and `Can't find service: display`
+
+`dumpsys display` queries the framework `DisplayManager` service, not the
+vendor display HAL. If it prints:
+
+```text
+Can't find service: display
+```
+
+check whether Android's framework started:
+
+```sh
+adb shell getprop init.svc.zygote
+adb shell getprop sys.boot_completed
+adb logcat -b all -d |
+  grep -E 'org\.lineageos\.platform-res|System zygote died|Service .zygote.'
+```
+
+The Leaf3 product must inherit
+`vendor/lineage/config/common_mini_tablet_wifionly.mk`. The compact profile
+is used because the system partition is only about 877 MiB. Without a Lineage
+common configuration, `/system/framework/org.lineageos.platform-res.apk` is
+omitted, zygote fails while creating the system `AssetManager`, and
+`system_server` never publishes `display`. The build script now rejects an
+output missing this APK.
+
+After updating the device tree, rebuild with `--skip-sync`, flash the newly
+built `system.img` and the other logical images in TWRP fastbootd, then flash
+the regenerated boot-chain images from TWRP as described above. Do not reuse
+the previous `system.img`.
+
+### Android works in scrcpy but the E-Ink panel stays white
+
+This is a separate failure from a missing framework display service. On the
+stock kernel, connector `DSI-1` is an intentional dummy Qualcomm primary
+display and `DSI-2` is the real ONYX EPDC panel. Standard Qualcomm HWC renders
+Android to the dummy connector, which is why scrcpy works, but it does not
+submit those frames through the private `/dev/ebc` update interface.
+
+The stock ROM solves this with ONYX modifications embedded directly in
+`framework.jar` and `services.jar` (`OECService` and `OnyxDeviceService`).
+Those core stock jars are not binary-compatible replacements for LineageOS.
+This device tree instead builds `leaf3_epdc_bridge`, a small native service
+which captures the composed primary display and forwards changed rectangles
+to `/dev/ebc`. It uses one full GC16 refresh at startup. After that it monitors
+the Cypress `cyttsp5_mt` input device, wakes immediately for touch events, and
+waits 32 ms for SurfaceFlinger to compose the resulting frame before capturing
+it. Timer polling remains as a fallback for non-touch changes.
+
+The bridge exposes the stock ONYX waveform strategies globally. The values
+were recovered from the stock `ViewUpdateHelper` implementation rather than
+guessed:
+
+| Mode | Stock waveform | Intended use |
+| --- | --- | --- |
+| `balanced` | A2 while interacting, AUTO after settling | Default; responsive with automatic ghost cleanup |
+| `normal` | AUTO | Highest general UI quality |
+| `speed` | DU | Faster monochrome page and list changes |
+| `a2` | ANIM/A2 | Fastest interaction, with more ghosting and less grayscale |
+| `regal` | REGAL | Text-oriented partial updates with reduced ghosting |
+
+Fast updates mark the panel as needing cleanup. After four unchanged capture
+cycles (about 320 ms), or 20 consecutive fast updates, the bridge submits one
+full-screen GC16 update. A partial AUTO update proved unable to remove retained
+launcher and Settings frames after a long A2 scroll. The full cleanup flashes
+more visibly, but restores a readable panel after interaction. This mirrors
+the stock ROM's fast-mode plus periodic GC strategy without importing its
+binary-incompatible framework.
+
+The ONYX ioctl embeds an `mxcfb_rect`, whose binary field order is `top`,
+`left`, `width`, `height`. An earlier bridge revision used `left`, `top`; full
+updates appeared to work because both coordinates were zero, but scrolling
+produced invalid requests such as `x=1537, width=1264`. The kernel rejected
+those requests and the panel appeared frozen during list movement. The bridge
+now uses the correct ABI order and polls compositor changes every 80 ms while
+content remains active.
+
+Rebuild the images. The refresh/frontlight bridge changes `system.img`, the
+Settings shortcut fix changes `system_ext.img`, and the build regenerates
+`vbmeta.img` for their new hashes. `boot.img`, `dtbo.img`, and `product.img`
+are unchanged by these fixes:
+
+```sh
+./build-lineage-arch.sh \
+  --source-dir /srv/android/lineage-18.1 \
+  --adb-public-key /srv/keys/leaf3-adbkey.pub \
+  --skip-sync \
+  --jobs 12
+```
+
+After boot completes, verify the bridge:
+
+```sh
+adb wait-for-device
+adb shell getprop init.svc.leaf3-epdc-bridge
+adb shell ps -AZ | grep leaf3_epdc_bridge
+adb logcat -b all -d -s leaf3_epdc_bridge
+adb shell ls -lZ /dev/ebc
+adb shell leaf3-refresh status
+```
+
+The service property should be `running` and the log should contain:
+
+```text
+mapped EBC buffer for 1264x1680
+touch wake-up enabled on /dev/input/event3 (cyttsp5_mt)
+```
+
+Change the global strategy without rebooting:
+
+```sh
+adb shell leaf3-refresh balanced
+adb shell leaf3-refresh normal
+adb shell leaf3-refresh speed
+adb shell leaf3-refresh a2
+adb shell leaf3-refresh regal
+```
+
+The selection persists across reboots. Request a one-time full GC16 cleanup
+after visible ghosting with:
+
+```sh
+adb shell leaf3-refresh full
+```
+
+These are currently global modes. Stock ONYX firmware can select modes per
+application because it modifies SurfaceFlinger, `framework.jar`, and
+`services.jar`. Adding a per-app settings UI is possible later, but copying
+those stock jars into LineageOS is not safe or ABI-compatible.
+
+### The frontlight does not follow Android brightness
+
+Leaf3 has a frontlight behind the display bezel, rather than an LCD
+backlight. The stock kernel exposes its two controls as:
+
+```text
+/sys/class/backlight/onyx_bl_br/brightness  # total brightness, 0-28
+/sys/class/backlight/onyx_bl_ct/brightness  # color temperature, 0-24
+```
+
+The preserved Qualcomm light HAL only knows about the dummy DSI display and
+writes Android's 0-255 brightness to
+`/sys/class/backlight/panel0-backlight/brightness`. It therefore appears to
+work in Settings while leaving both ONYX controls at zero.
+
+`leaf3_epdc_bridge` now mirrors the dummy panel brightness to the real ONYX
+brightness control. Android's visible slider is gamma-corrected before the
+light HAL receives its 10-255 value, so the bridge first applies the inverse
+of Android 11's standard `BrightnessUtils` curve. It then spreads the result
+across all 28 ONYX steps. A direct linear conversion makes almost every
+visible change occur in the last 10% of the slider.
+
+The bridge also follows the zero value sent by Android while the display is
+asleep, so the frontlight turns off and restores with the screen. The ordinary
+Settings and Quick Settings brightness slider is the primary control.
+
+When the dummy panel backlight reaches zero, the bridge now stops
+SurfaceFlinger capture and pixel comparison entirely. It polls only the cheap
+backlight/input state until Android wakes, then resumes with one full GC16
+refresh. This avoids spending CPU and battery taking two full-screen
+screenshots per second while the device is asleep.
+
+After rebuilding and flashing the new `system.img` and matching `vbmeta.img`,
+verify the mapping:
+
+```sh
+adb shell settings put system screen_brightness 128
+sleep 1
+adb shell leaf3-frontlight status
+```
+
+Because `128` is a linear light-HAL value, it corresponds to a high position
+on Android's gamma-space slider and should produce approximately step 24 of
+28. The helper accepts hardware percentages when a precise ADB control is
+more convenient:
+
+```sh
+adb shell leaf3-frontlight brightness 35
+adb shell leaf3-frontlight off
+adb shell leaf3-frontlight on
+adb shell leaf3-frontlight auto
+```
+
+Android clamps the brightness setting to its configured minimum while the
+screen is awake. The helper therefore uses a separate persistent on/off flag
+instead of relying on a slider value of zero. `brightness` installs a manual
+hardware-percentage override; `auto` removes it and returns control to the
+Android slider.
+
+Color temperature is independent of brightness. Zero is coolest and 100 is
+warmest:
+
+```sh
+adb shell leaf3-frontlight cool
+adb shell leaf3-frontlight temperature 50
+adb shell leaf3-frontlight warm
+adb shell leaf3-frontlight status
+```
+
+The temperature selection persists across reboots. This first implementation
+also includes the preinstalled **Leaf3 Controls** app because standard
+LineageOS 18.1 exposes only one brightness slider.
+
+### Leaf3 Controls app
+
+The launcher contains a platform-signed system app named **Leaf3 Controls**.
+It provides:
+
+- Balanced, Normal, Speed, A2, and Regal refresh modes.
+- A one-tap full GC16 screen cleanup.
+- Frontlight on/off.
+- A switch to follow Android's standard brightness slider.
+- A manual frontlight percentage override.
+- Cool-to-warm color-temperature control.
+
+The controls use the same persistent properties as `leaf3-refresh` and
+`leaf3-frontlight`, so changes made in the app are visible to the command-line
+tools and survive a reboot. Manual brightness disables Android-slider
+following until **Follow Android brightness slider** is enabled again.
+
+The app is installed in `system_ext.img`. After rebuilding, flash the new
+`system.img`, `system_ext.img`, and matching `vbmeta.img`. Confirm installation
+and launch it directly if the launcher has not refreshed its app list:
+
+```sh
+adb shell pm path org.lineageos.leaf3controls
+adb shell am start -n \
+  org.lineageos.leaf3controls/.MainActivity
+```
+
+To inspect the values applied by the app:
+
+```sh
+adb shell leaf3-refresh status
+adb shell leaf3-frontlight status
+```
+
+### Navigation buttons are missing
+
+The generic framework resource defaults `config_showNavigationBar` to false
+for this product even though `config_navBarInteractionMode` is already `0`
+(three-button navigation). As a result, SystemUI never creates a navigation
+bar window. The Leaf3 framework overlay now enables the software navigation
+bar because the device has no reliable hardware navigation keys.
+
+After flashing the rebuilt `system.img`, verify both values and the window:
+
+```sh
+adb shell cmd overlay lookup android android:bool/config_showNavigationBar
+adb shell settings get secure navigation_mode
+adb shell dumpsys SurfaceFlinger --list | grep NavigationBar
+```
+
+The expected resource value is `true`, the interaction mode is `0`, and at
+least one `NavigationBar` layer should be listed.
+
+Android's default window and transition animation scales are both `1.0`.
+Animations generate many intermediate frames and ghosting without adding much
+value on E-Ink. Disable them for the current user with:
+
+```sh
+adb shell leaf3-refresh animations-off
+```
+
+Restore the standard Android behavior if needed:
+
+```sh
+adb shell leaf3-refresh animations-on
+```
+
+During permissive bring-up the service runs in init's existing SELinux domain.
+This is necessary because the device preserves the stock vendor partition,
+whose precompiled runtime policy cannot contain a newly defined Lineage device
+domain. A production enforcing port must integrate the bridge and its
+dedicated EBC device type into the matching vendor policy instead.
+
+If the service is `stopped`, collect these diagnostics before rebooting:
+
+```sh
+adb logcat -b all -d -s leaf3_epdc_bridge > leaf3-epdc-bridge.txt
+adb shell dmesg |
+  grep -Ei 'avc:|denied|ebc|epdc' > leaf3-epdc-kernel.txt
+adb shell dumpsys SurfaceFlinger > leaf3-surfaceflinger.txt
+```
+
+This bridge is a bring-up implementation. A production port should integrate
+damage and E-Ink waveform selection with the compositor, suspend updates while
+the display is off, and run with SELinux enforcing after its device policy has
+been audited.
+
+### Settings shortcut crashes SystemUI
+
+If Settings opens when started with `adb shell am start -a
+android.settings.SETTINGS` but tapping the Settings shortcut makes the status
+bar disappear, inspect the crash buffer:
+
+```sh
+adb logcat -b crash -d
+```
+
+The LineageOS 18.1 failure fixed by this tree has this signature:
+
+```text
+Process: com.android.systemui
+java.lang.RuntimeException: Can't create handler inside thread
+at com.android.systemui.assist.AssistManager.<init>
+at com.android.systemui.statusbar.phone.StatusBar.startActivityDismissingKeyguard
+```
+
+`StatusBar` lazily creates `AssistManager` from an `AsyncTask`, while that
+Android 11 implementation constructs an unqualified `Handler`. The build
+script applies `tools/patch-systemui-assist-handler.py`, pinning the handler to
+the main looper. The patcher is strict and idempotent, so it fails instead of
+silently changing an unexpected source revision.
+
+This fix changes `SystemUI.apk` in `system_ext.img`. After rebuilding, flash
+both the new `system.img` (refresh bridge) and `system_ext.img` (SystemUI fix)
+through TWRP fastbootd. A direct ActivityManager launch is useful as a
+temporary workaround on an older build:
+
+```sh
+adb shell am start -a android.settings.SETTINGS
+```
+
+### “There's an internal problem with your device”
+
+Android displays this warning when its VINTF build-consistency check fails.
+On the Leaf3, the stock ONYX 4.19 kernel has `CONFIG_PM_AUTOSLEEP=y`, while the
+standard Android 11 framework compatibility matrix requires it to be disabled.
+The boot log identifies the mismatch as:
+
+```text
+No compatible kernel requirement found (kernel FCM version = 5)
+For config CONFIG_PM_AUTOSLEEP, value = y but required n
+```
+
+ONYX's stock level-5 matrix contains a device-specific exception requiring
+`y` for the 4.19 kernel. The build script applies that same exception only to
+the generated 4.19 matrix block and then rebuilds `system.img` and
+`vbmeta.img`. It does not modify the shared `kernel/configs` source repository.
+
+After flashing the regenerated `system.img`, verify that the warning is gone
+and that no compatibility error was logged:
+
+```sh
+adb logcat -b all -d |
+  grep -E 'Vendor interface is incompatible|CONFIG_PM_AUTOSLEEP'
+```
+
+### Boot returns directly to bootloader fastboot
+
+If TWRP boots but the generated system immediately returns to bootloader
+fastboot, verify that first-stage files are present in `boot.img`. Android 11
+uses `$(TARGET_COPY_OUT_RAMDISK)` for device-specific boot-ramdisk files;
+copying them to `root/` can produce a minimal ramdisk containing only `init`.
+
+The build script extracts the completed boot image and refuses to finish unless
+`fstab.emmc` is a regular file with exactly the device-tree contents and the
+stock e-ink waveform is present. To inspect an image manually:
+
+```sh
+mkdir -p /tmp/leaf3-boot
+python3 system/tools/mkbootimg/unpack_bootimg.py \
+  --boot_img out/target/product/leaf3/boot.img \
+  --out /tmp/leaf3-boot
+gzip -dc /tmp/leaf3-boot/ramdisk | cpio -it |
+  grep -E '^(fstab\.emmc|waveform/eink_waveform\.wbf)$'
+```
+
+Both paths must be printed. A zeroed first 32 bytes of `misc` excludes a stale
+bootloader-control-block command; it does not make a ramdisk without an fstab
+bootable.
 
 ### Invalid Chromium WebView APK
 
@@ -174,6 +770,7 @@ sync:
 ```sh
 ./build-lineage-arch.sh \
   --source-dir /srv/android/lineage-18.1 \
+  --adb-public-key /srv/keys/leaf3-adbkey.pub \
   --skip-sync \
   --jobs 12
 ```
@@ -206,6 +803,7 @@ LineageOS checkout and Ninja resumes the failed image target:
 ```sh
 ./build-lineage-arch.sh \
   --source-dir /srv/android/lineage-18.1 \
+  --adb-public-key /srv/keys/leaf3-adbkey.pub \
   --skip-sync \
   --jobs 12
 ```

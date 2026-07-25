@@ -1,2 +1,48 @@
 soong_namespace {
 }
+
+cc_binary {
+    name: "leaf3_epdc_bridge",
+    srcs: ["display/leaf3_epdc_bridge.cpp"],
+    init_rc: ["display/leaf3_epdc_bridge.rc"],
+    shared_libs: [
+        "libbase",
+        "libbinder",
+        "libgui",
+        "liblog",
+        "libm",
+        "libui",
+        "libutils",
+    ],
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+    ],
+}
+
+sh_binary {
+    name: "leaf3_refresh",
+    src: "display/leaf3-refresh",
+    filename: "leaf3-refresh",
+}
+
+sh_binary {
+    name: "leaf3_frontlight",
+    src: "display/leaf3-frontlight",
+    filename: "leaf3-frontlight",
+}
+
+android_app {
+    name: "Leaf3Controls",
+    srcs: ["app/src/**/*.java"],
+    resource_dirs: ["app/res"],
+    manifest: "app/AndroidManifest.xml",
+    certificate: "platform",
+    platform_apis: true,
+    privileged: true,
+    system_ext_specific: true,
+    optimize: {
+        enabled: true,
+    },
+}

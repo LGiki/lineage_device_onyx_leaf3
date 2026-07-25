@@ -1,0 +1,11 @@
+service leaf3-epdc-bridge /system/bin/leaf3_epdc_bridge
+    class late_start
+    user root
+    group root graphics input
+    # The preserved stock vendor policy cannot contain a new device domain.
+    # Run in init's existing domain during permissive bring-up.
+    seclabel u:r:init:s0
+    disabled
+
+on property:sys.boot_completed=1
+    start leaf3-epdc-bridge
