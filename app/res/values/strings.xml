@@ -8,6 +8,7 @@
     <string name="a2">A2</string>
     <string name="regal">Regal</string>
     <string name="full_refresh">Clean screen now</string>
+    <string name="disable_animations">Disable Android animations (recommended)</string>
     <string name="frontlight">Frontlight</string>
     <string name="frontlight_enabled">Frontlight enabled</string>
     <string name="follow_android_brightness">Follow Android brightness slider</string>

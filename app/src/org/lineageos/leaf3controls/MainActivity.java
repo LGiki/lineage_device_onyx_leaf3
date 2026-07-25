@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.os.Bundle;
 import android.os.SystemClock;
 import android.os.SystemProperties;
+import android.provider.Settings;
 import android.view.View;
 import android.widget.CompoundButton;
 import android.widget.RadioGroup;
@@ -36,6 +37,7 @@ public final class MainActivity extends Activity {
 
     final RadioGroup refreshModes = findViewById(R.id.refresh_modes);
     final Switch frontlightEnabled = findViewById(R.id.frontlight_enabled);
+    final Switch disableAnimations = findViewById(R.id.disable_animations);
     followAndroidBrightness = findViewById(R.id.follow_android_brightness);
     brightness = findViewById(R.id.brightness);
     temperature = findViewById(R.id.temperature);
@@ -51,6 +53,7 @@ public final class MainActivity extends Activity {
         storedBrightnessOverride < 0 ? -1 : clamp(storedBrightnessOverride);
     frontlightEnabled.setChecked(
         SystemProperties.getInt(FRONTLIGHT_ENABLED, 1) != 0);
+    disableAnimations.setChecked(animationsDisabled());
     followAndroidBrightness.setChecked(brightnessOverride < 0);
     brightness.setProgress(brightnessOverride < 0 ? 50 : brightnessOverride);
     brightness.setEnabled(brightnessOverride >= 0);
@@ -85,6 +88,16 @@ public final class MainActivity extends Activity {
           public void onCheckedChanged(CompoundButton button, boolean checked) {
             if (!loading) {
               setProperty(FRONTLIGHT_ENABLED, checked ? "1" : "0");
+            }
+          }
+        });
+
+    disableAnimations.setOnCheckedChangeListener(
+        new CompoundButton.OnCheckedChangeListener() {
+          @Override
+          public void onCheckedChanged(CompoundButton button, boolean checked) {
+            if (!loading) {
+              setAnimationsDisabled(checked);
             }
           }
         });
@@ -141,6 +154,37 @@ public final class MainActivity extends Activity {
     } catch (RuntimeException exception) {
       Toast
           .makeText(this, getString(R.string.property_error, name),
+                    Toast.LENGTH_LONG)
+          .show();
+    }
+  }
+
+  private boolean animationsDisabled() {
+    return Settings.Global.getFloat(getContentResolver(),
+                                    Settings.Global.WINDOW_ANIMATION_SCALE,
+                                    1.0f) == 0.0f &&
+        Settings.Global.getFloat(getContentResolver(),
+                                 Settings.Global.TRANSITION_ANIMATION_SCALE,
+                                 1.0f) == 0.0f &&
+        Settings.Global.getFloat(getContentResolver(),
+                                 Settings.Global.ANIMATOR_DURATION_SCALE,
+                                 1.0f) == 0.0f;
+  }
+
+  private void setAnimationsDisabled(boolean disabled) {
+    final float scale = disabled ? 0.0f : 1.0f;
+    try {
+      Settings.Global.putFloat(getContentResolver(),
+                               Settings.Global.WINDOW_ANIMATION_SCALE, scale);
+      Settings.Global.putFloat(getContentResolver(),
+                               Settings.Global.TRANSITION_ANIMATION_SCALE,
+                               scale);
+      Settings.Global.putFloat(getContentResolver(),
+                               Settings.Global.ANIMATOR_DURATION_SCALE, scale);
+    } catch (SecurityException exception) {
+      Toast
+          .makeText(this,
+                    getString(R.string.property_error, "animation settings"),
                     Toast.LENGTH_LONG)
           .show();
     }

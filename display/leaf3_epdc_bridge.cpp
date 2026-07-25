@@ -78,7 +78,9 @@ constexpr uint32_t kWaveformAuto = 5;
 constexpr uint32_t kWaveformRegal = 6;
 constexpr uint32_t kUpdatePartial = 0;
 constexpr uint32_t kUpdateFull = 1;
-constexpr useconds_t kActiveFrameDelayUs = 80000;
+constexpr useconds_t kFastFrameDelayUs = 80000;
+constexpr useconds_t kBalancedFrameDelayUs = 100000;
+constexpr useconds_t kQualityFrameDelayUs = 140000;
 constexpr useconds_t kIdleFrameDelayUs = 500000;
 constexpr useconds_t kTouchSettleDelayUs = 32000;
 constexpr useconds_t kRetryDelayUs = 1000000;
@@ -307,6 +309,20 @@ RefreshMode getRefreshMode() {
   return RefreshMode::kBalanced;
 }
 
+useconds_t activeFrameDelay(RefreshMode mode) {
+  switch (mode) {
+  case RefreshMode::kSpeed:
+  case RefreshMode::kA2:
+    return kFastFrameDelayUs;
+  case RefreshMode::kNormal:
+  case RefreshMode::kRegal:
+    return kQualityFrameDelayUs;
+  case RefreshMode::kBalanced:
+  default:
+    return kBalancedFrameDelayUs;
+  }
+}
+
 ChangedRect unionRects(const ChangedRect &left, const ChangedRect &right) {
   return ChangedRect{
       std::min(left.left, right.left),
@@ -444,12 +460,18 @@ public:
 
   bool submit(const uint8_t *pixels, uint32_t stride, const ChangedRect &rect,
               uint32_t waveform, bool full_refresh) {
-    const size_t row_bytes = static_cast<size_t>(width_) * sizeof(uint32_t);
-    for (uint32_t y = 0; y < height_; ++y) {
+    // The mmap persists between updates. Keep it current by copying only the
+    // changed bounding rectangle; full cleanups can then reuse the complete
+    // accumulated frame instead of copying another 8 MiB.
+    const size_t copy_bytes =
+        static_cast<size_t>(rect.right - rect.left) * sizeof(uint32_t);
+    for (uint32_t y = rect.top; y < rect.bottom; ++y) {
       memcpy(static_cast<uint8_t *>(buffer_) +
-                 static_cast<size_t>(y) * row_bytes,
-             pixels + static_cast<size_t>(y) * stride * sizeof(uint32_t),
-             row_bytes);
+                 (static_cast<size_t>(y) * width_ + rect.left) *
+                     sizeof(uint32_t),
+             pixels + (static_cast<size_t>(y) * stride + rect.left) *
+                          sizeof(uint32_t),
+             copy_bytes);
     }
 
     EbcUpdate update = {};
@@ -490,6 +512,10 @@ findChangedRect(const uint8_t *pixels, uint32_t width, uint32_t height,
     const auto *row = reinterpret_cast<const uint32_t *>(
         pixels + static_cast<size_t>(y) * stride * sizeof(uint32_t));
     const auto *old_row = previous.data() + static_cast<size_t>(y) * width;
+    if (memcmp(row, old_row, static_cast<size_t>(width) * sizeof(uint32_t)) ==
+        0) {
+      continue;
+    }
     for (uint32_t x = 0; x < width; ++x) {
       if (row[x] == old_row[x]) {
         continue;
@@ -512,13 +538,19 @@ findChangedRect(const uint8_t *pixels, uint32_t width, uint32_t height,
   return changed;
 }
 
-void saveFrame(const uint8_t *pixels, uint32_t width, uint32_t height,
-               uint32_t stride, std::vector<uint32_t> *destination) {
-  destination->resize(static_cast<size_t>(width) * height);
-  for (uint32_t y = 0; y < height; ++y) {
-    memcpy(destination->data() + static_cast<size_t>(y) * width,
-           pixels + static_cast<size_t>(y) * stride * sizeof(uint32_t),
-           static_cast<size_t>(width) * sizeof(uint32_t));
+void saveFrameRegion(const uint8_t *pixels, uint32_t width, uint32_t height,
+                     uint32_t stride, const ChangedRect &rect,
+                     std::vector<uint32_t> *destination) {
+  if (destination->size() != static_cast<size_t>(width) * height) {
+    destination->resize(static_cast<size_t>(width) * height);
+  }
+  const size_t copy_bytes =
+      static_cast<size_t>(rect.right - rect.left) * sizeof(uint32_t);
+  for (uint32_t y = rect.top; y < rect.bottom; ++y) {
+    memcpy(destination->data() + static_cast<size_t>(y) * width + rect.left,
+           pixels +
+               (static_cast<size_t>(y) * stride + rect.left) * sizeof(uint32_t),
+           copy_bytes);
   }
 }
 
@@ -670,8 +702,8 @@ int main() {
 
       if (ebc.submit(static_cast<const uint8_t *>(pixels), stride, *changed,
                      waveform, full_refresh)) {
-        saveFrame(static_cast<const uint8_t *>(pixels), width, height, stride,
-                  &previous);
+        saveFrameRegion(static_cast<const uint8_t *>(pixels), width, height,
+                        stride, *changed, &previous);
         first_refresh = false;
         unchanged_frames = 0;
         if (needs_cleanup) {
@@ -698,7 +730,7 @@ int main() {
     buffer->unlock();
     const useconds_t delay = unchanged_frames >= kIdleThresholdFrames
                                  ? kIdleFrameDelayUs
-                                 : kActiveFrameDelayUs;
+                                 : activeFrameDelay(refresh_mode);
     input_activity = input_wake.wait(delay);
     if (input_activity) {
       // Let InputDispatcher and SurfaceFlinger publish the frame caused by the

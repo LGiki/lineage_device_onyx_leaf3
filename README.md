@@ -442,7 +442,8 @@ guessed:
 | `regal` | REGAL | Text-oriented partial updates with reduced ghosting |
 
 Fast updates mark the panel as needing cleanup. After four unchanged capture
-cycles (about 320 ms), or 20 consecutive fast updates, the bridge submits one
+cycles (about 320–560 ms depending on mode), or 20 consecutive fast updates,
+the bridge submits one
 full-screen GC16 update. A partial AUTO update proved unable to remove retained
 launcher and Settings frames after a long A2 scroll. The full cleanup flashes
 more visibly, but restores a readable panel after interaction. This mirrors
@@ -454,8 +455,17 @@ The ONYX ioctl embeds an `mxcfb_rect`, whose binary field order is `top`,
 updates appeared to work because both coordinates were zero, but scrolling
 produced invalid requests such as `x=1537, width=1264`. The kernel rejected
 those requests and the panel appeared frozen during list movement. The bridge
-now uses the correct ABI order and polls compositor changes every 80 ms while
-content remains active.
+now uses the correct ABI order. Speed and A2 poll compositor changes every
+80 ms while content remains active, Balanced uses 100 ms, and the slower
+Normal and Regal quality modes use 140 ms.
+
+For partial updates, unchanged rows are rejected with an optimized memory
+comparison. Only the changed bounding rectangle is copied into the persistent
+EBC framebuffer and previous-frame cache. Earlier revisions copied the entire
+8 MiB screen into both buffers after every change, even when only a button or
+status icon changed. The persistent buffer still contains a complete current
+frame, so periodic full GC16 cleanup remains correct without another
+full-screen copy.
 
 Rebuild the images. The refresh/frontlight bridge changes `system.img`, the
 Settings shortcut fix changes `system_ext.img`, and the build regenerates
@@ -594,11 +604,15 @@ It provides:
 - A switch to follow Android's standard brightness slider.
 - A manual frontlight percentage override.
 - Cool-to-warm color-temperature control.
+- A switch to disable Android window, transition, and animator effects.
 
 The controls use the same persistent properties as `leaf3-refresh` and
 `leaf3-frontlight`, so changes made in the app are visible to the command-line
 tools and survive a reboot. Manual brightness disables Android-slider
 following until **Follow Android brightness slider** is enabled again.
+Window and transition animations default to off for new users because
+intermediate LCD animation frames waste CPU and create E-Ink ghosting. The app
+switch also controls animator effects and can restore all three Android scales.
 
 The app is installed in `system_ext.img`. After rebuilding, flash the new
 `system.img`, `system_ext.img`, and matching `vbmeta.img`. Confirm installation
