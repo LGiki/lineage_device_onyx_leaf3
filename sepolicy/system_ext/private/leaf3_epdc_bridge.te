@@ -2,7 +2,6 @@ type leaf3_epdc_bridge, domain, coredomain;
 type leaf3_epdc_bridge_exec, system_file_type, exec_type, file_type;
 type leaf3_epdc_device, dev_type;
 type leaf3_backlight_sysfs, fs_type, sysfs_type;
-type leaf3_touch_driver_sysfs, fs_type, sysfs_type;
 type leaf3_wakeup_sysfs, fs_type, sysfs_type;
 system_public_prop(leaf3_config_prop)
 
@@ -44,13 +43,10 @@ allow leaf3_epdc_bridge leaf3_backlight_sysfs:file {
   write
 };
 
-# Rebind only the stock Cypress I2C driver after wake. Its vendor PM notifier
-# can power the controller off without running the matching power-on callback.
-allow leaf3_epdc_bridge leaf3_touch_driver_sysfs:file { getattr open write };
-
-# init applies the narrow DAC ownership needed by the bridge.
+# init applies the narrow DAC ownership needed by the bridge and repairs the
+# stock ONYX PM state after an aborted suspend.
 allow init leaf3_epdc_device:chr_file { getattr setattr };
-allow init leaf3_touch_driver_sysfs:file setattr;
+allow init sysfs_power:file { open write };
 
 # Compatibility permissions required by the preserved Android 11 vendor
 # implementation. These are read-only and mirror the live denials.

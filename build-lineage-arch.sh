@@ -424,12 +424,12 @@ grep -Fxq 'ro.adb.secure=1' "$PRODUCT_OUT/system/etc/prop.default" || \
 grep -Fq 'leaf3_epdc_bridge' \
   "$PRODUCT_OUT/system_ext/etc/selinux/system_ext_sepolicy.cil" || \
   die "system_ext policy is missing the Leaf3 EPDC bridge domain"
-grep -Fq 'leaf3_touch_driver_sysfs' \
-  "$PRODUCT_OUT/system_ext/etc/selinux/system_ext_sepolicy.cil" || \
-  die "system_ext policy is missing the Leaf3 touchscreen wake workaround"
 grep -Fq 'leaf3_wakeup_sysfs' \
   "$PRODUCT_OUT/system_ext/etc/selinux/system_ext_sepolicy.cil" || \
   die "system_ext policy is missing the stock-driver wakeup labels"
+grep -Fq 'write /sys/power/autosleep off' \
+  "$PRODUCT_OUT/system_ext/etc/init/leaf3_epdc_bridge.rc" || \
+  die "system_ext init service is missing the ONYX PM wake repair"
 grep -Fq 'leaf3_epdc_bridge_exec' \
   "$PRODUCT_OUT/system_ext/etc/selinux/system_ext_file_contexts" || \
   die "system_ext file contexts do not label the Leaf3 EPDC bridge"

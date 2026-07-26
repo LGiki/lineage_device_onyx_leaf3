@@ -54,11 +54,6 @@ constexpr char kEbcDevice[] = "/dev/ebc";
 constexpr char kOnyxBrightness[] = "/sys/class/backlight/onyx_bl_br/brightness";
 constexpr char kOnyxTemperature[] =
     "/sys/class/backlight/onyx_bl_ct/brightness";
-constexpr char kTouchDriverUnbind[] =
-    "/sys/bus/i2c/drivers/cyttsp5_i2c_adapter/unbind";
-constexpr char kTouchDriverBind[] =
-    "/sys/bus/i2c/drivers/cyttsp5_i2c_adapter/bind";
-constexpr char kTouchI2cDevice[] = "2-0024";
 constexpr int kAndroidBrightnessMax = 255;
 constexpr int kAndroidBrightnessMin = 10;
 constexpr int kOnyxBrightnessMax = 28;
@@ -88,9 +83,7 @@ constexpr useconds_t kBalancedFrameDelayUs = 100000;
 constexpr useconds_t kQualityFrameDelayUs = 140000;
 constexpr useconds_t kIdleFrameDelayUs = 500000;
 constexpr useconds_t kTouchSettleDelayUs = 32000;
-constexpr useconds_t kTouchDiscoveryRetryDelayUs = 100000;
 constexpr useconds_t kRetryDelayUs = 1000000;
-constexpr uint32_t kTouchDiscoveryAttempts = 30;
 constexpr uint32_t kIdleThresholdFrames = 10;
 constexpr uint32_t kCleanupAfterUnchangedFrames = 4;
 constexpr uint32_t kFastCleanupInterval = 20;
@@ -191,23 +184,6 @@ bool writeIntegerFile(const char *path, int value) {
   const int saved_errno = errno;
   close(fd);
   if (written != length) {
-    errno = saved_errno;
-    return false;
-  }
-  return true;
-}
-
-bool writeTextFile(const char *path, const char *text) {
-  const int fd = open(path, O_WRONLY | O_CLOEXEC);
-  if (fd < 0) {
-    return false;
-  }
-
-  const size_t length = strlen(text);
-  const ssize_t written = write(fd, text, length);
-  const int saved_errno = errno;
-  close(fd);
-  if (written != static_cast<ssize_t>(length)) {
     errno = saved_errno;
     return false;
   }
@@ -418,46 +394,6 @@ public:
 private:
   int fd_ = -1;
 };
-
-bool rebindTouchController(InputWakeMonitor *input_wake) {
-  // The stock Cypress PM notifier powers the controller off during deep
-  // suspend but sometimes misses the matching power-on callback. A hardware
-  // reset cannot recover an unpowered controller. Rebinding this one I2C
-  // device reruns the vendor driver's power initialization and recreates its
-  // evdev node.
-  input_wake->reset();
-  if (!writeTextFile(kTouchDriverUnbind, kTouchI2cDevice)) {
-    ALOGE("cannot unbind touchscreen through %s: %s", kTouchDriverUnbind,
-          strerror(errno));
-    if (!input_wake->init()) {
-      ALOGW("touch input %s was not found; using timer polling",
-            kTouchInputName);
-    }
-    return false;
-  }
-  if (!writeTextFile(kTouchDriverBind, kTouchI2cDevice)) {
-    ALOGE("cannot bind touchscreen through %s: %s", kTouchDriverBind,
-          strerror(errno));
-    return false;
-  }
-
-  // The bind write returns before Android's input node is always visible.
-  // Retrying here keeps the bridge on touch-driven active polling after wake
-  // instead of permanently falling back to its slower idle timer.
-  for (uint32_t attempt = 0; attempt < kTouchDiscoveryAttempts; ++attempt) {
-    usleep(kTouchDiscoveryRetryDelayUs);
-    if (input_wake->init()) {
-      ALOGI("touchscreen driver rebound after display wake");
-      return true;
-    }
-  }
-
-  ALOGW("touchscreen driver rebound, but %s did not reappear within %u ms; "
-        "using timer polling",
-        kTouchInputName,
-        kTouchDiscoveryAttempts * kTouchDiscoveryRetryDelayUs / 1000);
-  return false;
-}
 
 class EbcDevice {
 public:
@@ -692,7 +628,6 @@ int main() {
     }
     if (!display_was_on) {
       ALOGI("display is on; resuming with a full refresh");
-      rebindTouchController(&input_wake);
       display_was_on = true;
       first_refresh = true;
       input_probe_frames = kInputProbeFrames;

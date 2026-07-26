@@ -559,16 +559,18 @@ This avoids spending CPU and battery taking two full-screen screenshots per
 second while the device is asleep. The ordinary Settings and Quick Settings
 brightness slider remains the primary control.
 
-The stock Cypress driver powers `cyttsp5_mt` off while entering deep suspend,
-but on this userspace it can miss its matching power-on callback. The input
-device then remains registered and enabled while its IRQ count stops changing
-and it emits no events. A hardware reset alone cannot recover the unpowered
-controller. On every real display off-to-on transition, the bridge closes its
-old event handle and rebinds only the Cypress I2C device. This reruns the
-driver's power initialization and probe. Because the bind operation can return
-before Android publishes the replacement event node, the bridge retries
-discovery for up to three seconds before falling back to timer polling. Access
-is restricted to the driver's two labeled bind controls.
+The stock kernel moves its private ONYX PM state from `on` to `mem` before
+attempting suspend. When that suspend aborts—most commonly while USB is
+connected—the kernel can leave ONYX PM in `mem` even though Android has
+returned to the awake state. The Cypress input device remains registered and
+its hardware IRQ still changes, but the driver emits no touch events.
+
+Whenever Android becomes interactive, init now writes `off` to
+`/sys/power/autosleep`. This operation is idempotent. If ONYX PM is already
+`on`, nothing changes; if an aborted suspend left it in `mem`, the kernel sends
+the missing `mem`-to-`on` notification to the original boot-probed Cypress
+driver. The driver must not be unbound after wake: a newly probed instance
+registers its notifier after the resume event has passed and remains asleep.
 
 E-Ink retains its last image without power. By default the bridge replaces
 that image with a white GC16 frame when Android turns the display off. Without
@@ -724,13 +726,13 @@ The bridge runs as UID `system` in the dedicated
 modified. The policy grants only the interfaces used by the bridge:
 SurfaceFlinger capture, graphics-buffer mapping, read-only touch monitoring,
 the labeled `/dev/ebc` node, two explicitly labeled writable frontlight paths,
-the Cypress driver's explicitly labeled bind and unbind controls, and its
-system properties. Read-only labels cover the wakeup nodes exposed by the
-preserved Qualcomm and ONYX drivers so Android's system-suspend service can
-inspect them without gaining generic sysfs access. The Leaf3 Controls system
-app publishes Android's interactive and brightness state through those
-properties, avoiding access to the preserved vendor policy's generic
-`vendor_sysfs_graphics` type.
+and its system properties. Init has narrow write access to the standard
+`sysfs_power` autosleep node for the ONYX PM-state repair. Read-only labels
+cover the wakeup nodes exposed by the preserved Qualcomm and ONYX drivers so
+Android's system-suspend service can inspect them without gaining generic
+sysfs access. The Leaf3 Controls system app publishes Android's interactive
+and brightness state through those properties, avoiding access to the
+preserved vendor policy's generic `vendor_sysfs_graphics` type.
 
 The kernel command line no longer forces permissive mode. After flashing the
 new `boot.img`, `system.img`, `system_ext.img`, and matching `vbmeta.img`,
@@ -744,19 +746,15 @@ adb shell getprop sys.leaf3.interactive
 adb shell getprop sys.leaf3.android_brightness
 adb shell ps -AZ | grep leaf3_epdc_bridge
 adb shell ls -lZ /dev/ebc
-adb shell ls -lZ /sys/bus/i2c/drivers/cyttsp5_i2c_adapter/{bind,unbind}
+adb shell cat /sys/power/autosleep
 ```
 
 Expected values include `Enforcing`, `1`, a `0` or `1` interactive state, an
 Android brightness in the `0`-`255` range,
 `u:r:leaf3_epdc_bridge:s0`, and
-`u:object_r:leaf3_epdc_device:s0`. Both driver controls should be labeled
-`u:object_r:leaf3_touch_driver_sysfs:s0` and owned by `system:graphics`. After
-one sleep/wake cycle, the bridge log should contain:
-
-```text
-touchscreen driver rebound after display wake
-```
+`u:object_r:leaf3_epdc_device:s0`. The autosleep node should report `off`
+after wake. After a USB-connected sleep/wake cycle, the existing
+`cyttsp5_mt` input node should remain present and continue emitting events.
 
 Collect new denials after exercising screen refresh, frontlight adjustment,
 sleep/wake, USB, Wi-Fi, and KOReader:
