@@ -1,0 +1,59 @@
+type leaf3_epdc_bridge, domain, coredomain;
+type leaf3_epdc_bridge_exec, system_file_type, exec_type, file_type;
+type leaf3_epdc_device, dev_type;
+type leaf3_backlight_sysfs, fs_type, sysfs_type;
+type leaf3_touch_driver_sysfs, fs_type, sysfs_type;
+type leaf3_wakeup_sysfs, fs_type, sysfs_type;
+system_public_prop(leaf3_config_prop)
+
+init_daemon_domain(leaf3_epdc_bridge)
+
+# Capture the composed display from SurfaceFlinger.
+binder_use(leaf3_epdc_bridge)
+binder_call(leaf3_epdc_bridge, surfaceflinger)
+allow leaf3_epdc_bridge surfaceflinger_service:service_manager find;
+
+# Lock and read GraphicBuffers returned by SurfaceFlinger.
+hwbinder_use(leaf3_epdc_bridge)
+hal_client_domain(leaf3_epdc_bridge, hal_graphics_allocator)
+allow leaf3_epdc_bridge hal_graphics_allocator:fd use;
+allow leaf3_epdc_bridge hal_graphics_mapper_hwservice:hwservice_manager find;
+# GraphicBuffer normally receives an already-open ION FD from the allocator,
+# but the Android 11 mapper also opens the allocator node while importing it.
+allow leaf3_epdc_bridge ion_device:chr_file { open read };
+
+# Read settings changed by the controls app or the ADB helper commands.
+get_prop(leaf3_epdc_bridge, leaf3_config_prop)
+set_prop(system_app, leaf3_config_prop)
+set_prop(shell, leaf3_config_prop)
+
+# Observe touch activity without injecting or exclusively grabbing events.
+allow leaf3_epdc_bridge input_device:dir r_dir_perms;
+allow leaf3_epdc_bridge input_device:chr_file { getattr ioctl open read };
+
+# Submit frames only to the ONYX E-Ink controller.
+allow leaf3_epdc_bridge leaf3_epdc_device:chr_file rw_file_perms;
+
+# Control only the two explicitly labeled ONYX frontlights.
+allow leaf3_epdc_bridge sysfs:dir search;
+allow leaf3_epdc_bridge leaf3_backlight_sysfs:dir search;
+allow leaf3_epdc_bridge leaf3_backlight_sysfs:file {
+  getattr
+  open
+  read
+  write
+};
+
+# Rebind only the stock Cypress I2C driver after wake. Its vendor PM notifier
+# can power the controller off without running the matching power-on callback.
+allow leaf3_epdc_bridge leaf3_touch_driver_sysfs:file { getattr open write };
+
+# init applies the narrow DAC ownership needed by the bridge.
+allow init leaf3_epdc_device:chr_file { getattr setattr };
+allow init leaf3_touch_driver_sysfs:file setattr;
+
+# Compatibility permissions required by the preserved Android 11 vendor
+# implementation. These are read-only and mirror the live denials.
+allow system_suspend leaf3_wakeup_sysfs:dir r_dir_perms;
+allow system_suspend leaf3_wakeup_sysfs:file r_file_perms;
+allow init debugfs_tracing_debug:dir mounton;

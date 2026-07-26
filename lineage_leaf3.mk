@@ -2,10 +2,6 @@ $(call inherit-product, $(SRC_TARGET_DIR)/product/core_64_bit.mk)
 $(call inherit-product, $(SRC_TARGET_DIR)/product/full_base.mk)
 $(call inherit-product, device/onyx/leaf3/device.mk)
 
-# Temporary bring-up setting: the panel cannot show Android's ADB
-# authorization dialog yet. Remove this before producing a distributable ROM.
-WITH_ADB_INSECURE := true
-
 # Include the Lineage framework resources and the compact tablet package set.
 # The mini profile is intentional: Leaf3's system partition is only 877 MiB.
 # Without a Lineage common profile, framework-res references

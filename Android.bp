@@ -5,6 +5,7 @@ cc_binary {
     name: "leaf3_epdc_bridge",
     srcs: ["display/leaf3_epdc_bridge.cpp"],
     init_rc: ["display/leaf3_epdc_bridge.rc"],
+    system_ext_specific: true,
     shared_libs: [
         "libbase",
         "libbinder",

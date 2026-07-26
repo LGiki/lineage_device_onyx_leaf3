@@ -1,0 +1,2 @@
+/system_ext/bin/leaf3_epdc_bridge    u:object_r:leaf3_epdc_bridge_exec:s0
+/dev/ebc                             u:object_r:leaf3_epdc_device:s0

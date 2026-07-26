@@ -33,7 +33,7 @@ BOARD_KERNEL_TAGS_OFFSET := 0x00000100
 BOARD_DTB_OFFSET := 0x01f00000
 BOARD_KERNEL_PAGESIZE := 4096
 BOARD_KERNEL_IMAGE_NAME := Image.gz
-BOARD_KERNEL_CMDLINE := console=ttyMSM0,115200n8 earlycon=msm_geni_serial,0x4a90000 androidboot.hardware=qcom androidboot.console=ttyMSM0 androidboot.memcg=1 lpm_levels.sleep_disabled=1 video=vfb:640x400,bpp=32,memsize=3072000 msm_rtb.filter=0x237 service_locator.enable=1 swiotlb=2048 loop.max_part=7 androidboot.selinux=permissive
+BOARD_KERNEL_CMDLINE := console=ttyMSM0,115200n8 earlycon=msm_geni_serial,0x4a90000 androidboot.hardware=qcom androidboot.console=ttyMSM0 androidboot.memcg=1 lpm_levels.sleep_disabled=1 video=vfb:640x400,bpp=32,memsize=3072000 msm_rtb.filter=0x237 service_locator.enable=1 swiotlb=2048 loop.max_part=7
 BOARD_MKBOOTIMG_ARGS += --base $(BOARD_KERNEL_BASE) --pagesize $(BOARD_KERNEL_PAGESIZE)
 BOARD_MKBOOTIMG_ARGS += --kernel_offset $(BOARD_KERNEL_OFFSET) --ramdisk_offset $(BOARD_RAMDISK_OFFSET)
 BOARD_MKBOOTIMG_ARGS += --tags_offset $(BOARD_KERNEL_TAGS_OFFSET) --dtb_offset $(BOARD_DTB_OFFSET)
@@ -71,6 +71,12 @@ BOARD_ROOT_EXTRA_FOLDERS += onyxconfig
 # Label the custom stock onyxconfig mount point when constructing the root
 # filesystem. Without this, e2fsdroid refuses to create system.img.
 BOARD_SEPOLICY_DIRS += $(DEVICE_PATH)/sepolicy
+
+# The stock vendor image is preserved, so the Leaf3 platform service policy
+# must ship from system_ext rather than being compiled into vendor policy.
+# Use the Android 11 compatibility name consumed by this LineageOS 18.1 tree.
+BOARD_PLAT_PRIVATE_SEPOLICY_DIR := \
+    $(DEVICE_PATH)/sepolicy/system_ext/private
 
 # Match the stock boot/vendor rollback metadata used by the pinned firmware.
 # PLATFORM_SECURITY_PATCH is owned and made read-only by the Lineage platform.

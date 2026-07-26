@@ -51,11 +51,14 @@ using android::SurfaceComposerClient;
 using android::ui::Dataspace;
 
 constexpr char kEbcDevice[] = "/dev/ebc";
-constexpr char kAndroidBacklight[] =
-    "/sys/class/backlight/panel0-backlight/brightness";
 constexpr char kOnyxBrightness[] = "/sys/class/backlight/onyx_bl_br/brightness";
 constexpr char kOnyxTemperature[] =
     "/sys/class/backlight/onyx_bl_ct/brightness";
+constexpr char kTouchDriverUnbind[] =
+    "/sys/bus/i2c/drivers/cyttsp5_i2c_adapter/unbind";
+constexpr char kTouchDriverBind[] =
+    "/sys/bus/i2c/drivers/cyttsp5_i2c_adapter/bind";
+constexpr char kTouchI2cDevice[] = "2-0024";
 constexpr int kAndroidBrightnessMax = 255;
 constexpr int kAndroidBrightnessMin = 10;
 constexpr int kOnyxBrightnessMax = 28;
@@ -66,6 +69,8 @@ constexpr char kFrontlightBrightnessOverrideProperty[] =
     "persist.sys.leaf3.frontlight_brightness";
 constexpr char kFrontlightTemperatureProperty[] =
     "persist.sys.leaf3.frontlight_temperature";
+constexpr char kInteractiveProperty[] = "sys.leaf3.interactive";
+constexpr char kAndroidBrightnessProperty[] = "sys.leaf3.android_brightness";
 constexpr unsigned long kEbcGetBufferInfo = 0x7003;
 constexpr unsigned long kEbcSendUpdate = 0x700c;
 constexpr int32_t kEbcAutoTemperature = 0x1000;
@@ -83,7 +88,9 @@ constexpr useconds_t kBalancedFrameDelayUs = 100000;
 constexpr useconds_t kQualityFrameDelayUs = 140000;
 constexpr useconds_t kIdleFrameDelayUs = 500000;
 constexpr useconds_t kTouchSettleDelayUs = 32000;
+constexpr useconds_t kTouchDiscoveryRetryDelayUs = 100000;
 constexpr useconds_t kRetryDelayUs = 1000000;
+constexpr uint32_t kTouchDiscoveryAttempts = 30;
 constexpr uint32_t kIdleThresholdFrames = 10;
 constexpr uint32_t kCleanupAfterUnchangedFrames = 4;
 constexpr uint32_t kFastCleanupInterval = 20;
@@ -190,6 +197,23 @@ bool writeIntegerFile(const char *path, int value) {
   return true;
 }
 
+bool writeTextFile(const char *path, const char *text) {
+  const int fd = open(path, O_WRONLY | O_CLOEXEC);
+  if (fd < 0) {
+    return false;
+  }
+
+  const size_t length = strlen(text);
+  const ssize_t written = write(fd, text, length);
+  const int saved_errno = errno;
+  close(fd);
+  if (written != static_cast<ssize_t>(length)) {
+    errno = saved_errno;
+    return false;
+  }
+  return true;
+}
+
 int getIntegerProperty(const char *name, int default_value) {
   const std::string text = getProperty(name);
   if (text.empty()) {
@@ -230,27 +254,17 @@ int mapAndroidBrightness(int android_brightness) {
 
 class FrontlightBridge {
 public:
-  bool update() {
-    int android_brightness = 0;
-    if (!readIntegerFile(kAndroidBacklight, &android_brightness)) {
-      if (!read_error_reported_) {
-        ALOGE("cannot read Android backlight %s: %s", kAndroidBacklight,
-              strerror(errno));
-        read_error_reported_ = true;
-      }
-      return display_on_;
-    }
-    read_error_reported_ = false;
-
-    android_brightness =
-        std::clamp(android_brightness, 0, kAndroidBrightnessMax);
-    display_on_ = android_brightness > 0;
+  void update(bool display_on) {
+    const int android_brightness =
+        std::clamp(getIntegerProperty(kAndroidBrightnessProperty, 128), 0,
+                   kAndroidBrightnessMax);
     const bool frontlight_enabled =
         getIntegerProperty(kFrontlightEnabledProperty, 1) != 0;
     const int brightness_override = std::clamp(
         getIntegerProperty(kFrontlightBrightnessOverrideProperty, -1), -1, 100);
-    int target_brightness = mapAndroidBrightness(android_brightness);
-    if (brightness_override >= 0 && android_brightness > 0) {
+    int target_brightness =
+        display_on ? mapAndroidBrightness(android_brightness) : 0;
+    if (brightness_override >= 0 && display_on) {
       target_brightness =
           brightness_override == 0
               ? 0
@@ -268,7 +282,6 @@ public:
     apply(kOnyxTemperature, target_temperature, &last_temperature_,
           "temperature");
     apply(kOnyxBrightness, target_brightness, &last_brightness_, "brightness");
-    return display_on_;
   }
 
 private:
@@ -290,8 +303,6 @@ private:
 
   int last_brightness_ = -1;
   int last_temperature_ = -1;
-  bool read_error_reported_ = false;
-  bool display_on_ = true;
 };
 
 RefreshMode getRefreshMode() {
@@ -336,17 +347,21 @@ ChangedRect unionRects(const ChangedRect &left, const ChangedRect &right) {
 
 class InputWakeMonitor {
 public:
-  ~InputWakeMonitor() {
+  ~InputWakeMonitor() { reset(); }
+
+  void reset() {
     if (fd_ >= 0) {
       close(fd_);
+      fd_ = -1;
     }
   }
 
-  void init() {
+  bool init() {
+    reset();
     DIR *directory = opendir("/dev/input");
     if (directory == nullptr) {
       ALOGW("cannot open /dev/input: %s", strerror(errno));
-      return;
+      return false;
     }
 
     for (dirent *entry = readdir(directory); entry != nullptr;
@@ -378,10 +393,7 @@ public:
     }
     closedir(directory);
 
-    if (fd_ < 0) {
-      ALOGW("touch input %s was not found; using timer polling",
-            kTouchInputName);
-    }
+    return fd_ >= 0;
   }
 
   bool wait(useconds_t timeout_us) {
@@ -406,6 +418,46 @@ public:
 private:
   int fd_ = -1;
 };
+
+bool rebindTouchController(InputWakeMonitor *input_wake) {
+  // The stock Cypress PM notifier powers the controller off during deep
+  // suspend but sometimes misses the matching power-on callback. A hardware
+  // reset cannot recover an unpowered controller. Rebinding this one I2C
+  // device reruns the vendor driver's power initialization and recreates its
+  // evdev node.
+  input_wake->reset();
+  if (!writeTextFile(kTouchDriverUnbind, kTouchI2cDevice)) {
+    ALOGE("cannot unbind touchscreen through %s: %s", kTouchDriverUnbind,
+          strerror(errno));
+    if (!input_wake->init()) {
+      ALOGW("touch input %s was not found; using timer polling",
+            kTouchInputName);
+    }
+    return false;
+  }
+  if (!writeTextFile(kTouchDriverBind, kTouchI2cDevice)) {
+    ALOGE("cannot bind touchscreen through %s: %s", kTouchDriverBind,
+          strerror(errno));
+    return false;
+  }
+
+  // The bind write returns before Android's input node is always visible.
+  // Retrying here keeps the bridge on touch-driven active polling after wake
+  // instead of permanently falling back to its slower idle timer.
+  for (uint32_t attempt = 0; attempt < kTouchDiscoveryAttempts; ++attempt) {
+    usleep(kTouchDiscoveryRetryDelayUs);
+    if (input_wake->init()) {
+      ALOGI("touchscreen driver rebound after display wake");
+      return true;
+    }
+  }
+
+  ALOGW("touchscreen driver rebound, but %s did not reappear within %u ms; "
+        "using timer polling",
+        kTouchInputName,
+        kTouchDiscoveryAttempts * kTouchDiscoveryRetryDelayUs / 1000);
+  return false;
+}
 
 class EbcDevice {
 public:
@@ -598,7 +650,9 @@ int main() {
   EbcDevice ebc;
   FrontlightBridge frontlight;
   InputWakeMonitor input_wake;
-  input_wake.init();
+  if (!input_wake.init()) {
+    ALOGW("touch input %s was not found; using timer polling", kTouchInputName);
+  }
   std::vector<uint32_t> previous;
   bool initialized = false;
   bool first_refresh = true;
@@ -613,10 +667,11 @@ int main() {
   ALOGI("refresh mode: %s", refreshModeName(refresh_mode));
 
   for (;;) {
-    // Qualcomm's stock light HAL updates the dummy DSI backlight. Mirror that
-    // value to ONYX's real frontlight controller, including the zero written
-    // by DisplayPowerController while the screen is off.
-    const bool display_on = frontlight.update();
+    // A small platform-signed service publishes Android's interactive and
+    // brightness state. This avoids crossing Treble policy boundaries to read
+    // the stock vendor-labeled dummy-panel backlight.
+    const bool display_on = getIntegerProperty(kInteractiveProperty, 1) != 0;
+    frontlight.update(display_on);
     if (!display_on) {
       if (display_was_on) {
         if (initialized && getIntegerProperty(kClearOnSleepProperty, 1) != 0) {
@@ -637,6 +692,7 @@ int main() {
     }
     if (!display_was_on) {
       ALOGI("display is on; resuming with a full refresh");
+      rebindTouchController(&input_wake);
       display_was_on = true;
       first_refresh = true;
       input_probe_frames = kInputProbeFrames;

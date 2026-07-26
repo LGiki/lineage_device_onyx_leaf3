@@ -62,14 +62,13 @@ computer that will debug the device. For example, copy
 `~/.android/adbkey.pub` from the macOS debugging computer to a protected
 location on the Arch build server. Never copy or pass the private `adbkey`
 file. The public key is embedded as `/adb_keys` in `boot.img`; the build stops
-if the key is absent or does not match.
+if the key is absent or does not match. Some system-as-root boot flows do not
+retain that ramdisk path in Android's running root, so a clean-data install
+can still show the standard authorization prompt.
 
-During display bring-up, `lineage_leaf3.mk` also sets
-`WITH_ADB_INSECURE := true`, making `ro.adb.secure=0`. This allows ADB access
-when the panel cannot show the authorization dialog. It is intentionally
-unsafe and must be removed before distributing a ROM or using the device on an
-untrusted USB connection. The embedded public key remains in place so
-authenticated ADB can be restored later.
+ADB authentication remains enabled with `ro.adb.secure=1`. The matching
+private key stays only on the debugging computer, and any unrecognized
+computer remains unauthorized until its key is accepted on the device.
 
 The script:
 
@@ -537,27 +536,39 @@ backlight. The stock kernel exposes its two controls as:
 /sys/class/backlight/onyx_bl_ct/brightness  # color temperature, 0-24
 ```
 
-The preserved Qualcomm light HAL only knows about the dummy DSI display and
-writes Android's 0-255 brightness to
-`/sys/class/backlight/panel0-backlight/brightness`. It therefore appears to
-work in Settings while leaving both ONYX controls at zero.
+The preserved Qualcomm light HAL only knows about the dummy DSI display, so
+changing Android's brightness does not directly update either ONYX control.
+The platform-signed Leaf3 Controls service observes Android's 0-255 brightness
+and interactive state and publishes them through the labeled
+`sys.leaf3.android_brightness` and `sys.leaf3.interactive` properties. This
+avoids reading the dummy panel's vendor-labeled sysfs nodes from the
+`system_ext` bridge, which would cross Android's Treble SELinux boundary.
 
-`leaf3_epdc_bridge` now mirrors the dummy panel brightness to the real ONYX
-brightness control. Android's visible slider is gamma-corrected before the
-light HAL receives its 10-255 value, so the bridge first applies the inverse
-of Android 11's standard `BrightnessUtils` curve. It then spreads the result
-across all 28 ONYX steps. A direct linear conversion makes almost every
-visible change occur in the last 10% of the slider.
+`leaf3_epdc_bridge` maps the relayed brightness to the real ONYX brightness
+control. Android's visible slider is gamma-corrected before the light HAL
+receives its 10-255 value, so the bridge first applies the inverse of Android
+11's standard `BrightnessUtils` curve. It then spreads the result across all
+28 ONYX steps. A direct linear conversion makes almost every visible change
+occur in the last 10% of the slider.
 
-The bridge also follows the zero value sent by Android while the display is
-asleep, so the frontlight turns off and restores with the screen. The ordinary
-Settings and Quick Settings brightness slider is the primary control.
+The relay also reports when Android becomes non-interactive, so the frontlight
+turns off and restores with the screen. While Android is asleep, the bridge
+stops SurfaceFlinger capture and pixel comparison entirely and polls only its
+cheap input/property state. It resumes with one full GC16 refresh after wake.
+This avoids spending CPU and battery taking two full-screen screenshots per
+second while the device is asleep. The ordinary Settings and Quick Settings
+brightness slider remains the primary control.
 
-When the dummy panel backlight reaches zero, the bridge now stops
-SurfaceFlinger capture and pixel comparison entirely. It polls only the cheap
-backlight/input state until Android wakes, then resumes with one full GC16
-refresh. This avoids spending CPU and battery taking two full-screen
-screenshots per second while the device is asleep.
+The stock Cypress driver powers `cyttsp5_mt` off while entering deep suspend,
+but on this userspace it can miss its matching power-on callback. The input
+device then remains registered and enabled while its IRQ count stops changing
+and it emits no events. A hardware reset alone cannot recover the unpowered
+controller. On every real display off-to-on transition, the bridge closes its
+old event handle and rebinds only the Cypress I2C device. This reruns the
+driver's power initialization and probe. Because the bind operation can return
+before Android publishes the replacement event node, the bridge retries
+discovery for up to three seconds before falling back to timer polling. Access
+is restricted to the driver's two labeled bind controls.
 
 E-Ink retains its last image without power. By default the bridge replaces
 that image with a white GC16 frame when Android turns the display off. Without
@@ -689,8 +700,8 @@ adb shell locksettings get-disabled
 ```
 
 The final command must print `false`. After rebuilding, flash `system.img`,
-`system_ext.img`, and their matching `vbmeta.img`. The framework overlay and
-EPDC bridge are in `system.img`; the Leaf3 Controls switch is in
+`system_ext.img`, and their matching `vbmeta.img`. The framework overlay is in
+`system.img`; the EPDC bridge and Leaf3 Controls switch are in
 `system_ext.img`.
 
 Android's default window and transition animation scales are both `1.0`.
@@ -707,11 +718,53 @@ Restore the standard Android behavior if needed:
 adb shell leaf3-refresh animations-on
 ```
 
-During permissive bring-up the service runs in init's existing SELinux domain.
-This is necessary because the device preserves the stock vendor partition,
-whose precompiled runtime policy cannot contain a newly defined Lineage device
-domain. A production enforcing port must integrate the bridge and its
-dedicated EBC device type into the matching vendor policy instead.
+The bridge runs as UID `system` in the dedicated
+`u:r:leaf3_epdc_bridge:s0` SELinux domain. Its private policy ships from
+`system_ext`, so the preserved stock vendor partition does not need to be
+modified. The policy grants only the interfaces used by the bridge:
+SurfaceFlinger capture, graphics-buffer mapping, read-only touch monitoring,
+the labeled `/dev/ebc` node, two explicitly labeled writable frontlight paths,
+the Cypress driver's explicitly labeled bind and unbind controls, and its
+system properties. Read-only labels cover the wakeup nodes exposed by the
+preserved Qualcomm and ONYX drivers so Android's system-suspend service can
+inspect them without gaining generic sysfs access. The Leaf3 Controls system
+app publishes Android's interactive and brightness state through those
+properties, avoiding access to the preserved vendor policy's generic
+`vendor_sysfs_graphics` type.
+
+The kernel command line no longer forces permissive mode. After flashing the
+new `boot.img`, `system.img`, `system_ext.img`, and matching `vbmeta.img`,
+verify enforcement, authenticated ADB, the service domain, and its device
+label:
+
+```sh
+adb shell getenforce
+adb shell getprop ro.adb.secure
+adb shell getprop sys.leaf3.interactive
+adb shell getprop sys.leaf3.android_brightness
+adb shell ps -AZ | grep leaf3_epdc_bridge
+adb shell ls -lZ /dev/ebc
+adb shell ls -lZ /sys/bus/i2c/drivers/cyttsp5_i2c_adapter/{bind,unbind}
+```
+
+Expected values include `Enforcing`, `1`, a `0` or `1` interactive state, an
+Android brightness in the `0`-`255` range,
+`u:r:leaf3_epdc_bridge:s0`, and
+`u:object_r:leaf3_epdc_device:s0`. Both driver controls should be labeled
+`u:object_r:leaf3_touch_driver_sysfs:s0` and owned by `system:graphics`. After
+one sleep/wake cycle, the bridge log should contain:
+
+```text
+touchscreen driver rebound after display wake
+```
+
+Collect new denials after exercising screen refresh, frontlight adjustment,
+sleep/wake, USB, Wi-Fi, and KOReader:
+
+```sh
+adb logcat -b kernel -d |
+  grep 'avc:.*denied' > leaf3-enforcing-avc.txt
+```
 
 If the service is `stopped`, collect these diagnostics before rebooting:
 
@@ -722,10 +775,9 @@ adb shell dmesg |
 adb shell dumpsys SurfaceFlinger > leaf3-surfaceflinger.txt
 ```
 
-This bridge is a bring-up implementation. A production port should integrate
-damage and E-Ink waveform selection with the compositor, suspend updates while
-the display is off, and run with SELinux enforcing after its device policy has
-been audited.
+This bridge is still a bring-up implementation. A production port should
+integrate damage and E-Ink waveform selection directly with the compositor
+instead of periodically capturing its output.
 
 ### Settings shortcut crashes SystemUI
 
@@ -878,8 +930,9 @@ for immediate restoration.
 
 Treat every output as a development image. Preserve the complete stock
 firmware and both active-slot states. The test vbmeta disables verification,
-and the kernel command line is permissive. A maintained port still requires a
-matching GPL kernel source tree, complete device policy, and enforcing SELinux.
+but SELinux and ADB authentication remain enabled. A maintained port still
+requires a matching GPL kernel source tree, audited policy under broader
+runtime testing, release keys, and verified boot.
 
 The optional `extract-files.sh` creates a complete stock-vendor inventory for
 later vendor-source development. Its output is not inherited by this build and

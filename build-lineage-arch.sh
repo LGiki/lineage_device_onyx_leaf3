@@ -313,12 +313,25 @@ log "Installing the Leaf3 device tree into the source checkout"
 mkdir -p "$TARGET_DEVICE_DIR"
 if [[ "$SCRIPT_DIR" != "$TARGET_DEVICE_DIR" ]]; then
   rsync -a \
+    --delete \
     --exclude='.git/' \
     --exclude='.github/' \
     --exclude='.cache/' \
+    --exclude='prebuilt/' \
     --exclude='stock-images/' \
     "$SCRIPT_DIR/" "$TARGET_DEVICE_DIR/"
 fi
+
+# Older revisions installed the bridge policy directly under sepolicy/. It was
+# later moved to the system_ext private policy directory. Remove the obsolete
+# copy even when this script itself is running from TARGET_DEVICE_DIR, where
+# the rsync mirror step is intentionally skipped.
+readonly OBSOLETE_EPDC_POLICY="$TARGET_DEVICE_DIR/sepolicy/leaf3_epdc_bridge.te"
+if [[ -e "$OBSOLETE_EPDC_POLICY" ]]; then
+  log "Removing obsolete flat EPDC bridge policy"
+  rm -f -- "$OBSOLETE_EPDC_POLICY"
+fi
+
 if [[ "$ADB_PUBLIC_KEY" != "$TARGET_DEVICE_DIR/debug-adb-key.pub" ]]; then
   cp -- "$ADB_PUBLIC_KEY" "$TARGET_DEVICE_DIR/debug-adb-key.pub"
 fi
@@ -378,7 +391,11 @@ export PATH="$JAVA_HOME/bin:$PATH"
 log "Verifying build outputs"
 readonly PRODUCT_OUT="$SOURCE_DIR/$PRODUCT_OUT_REL"
 readonly VERIFY_DIR="$SOURCE_DIR/.leaf3-cache/verify-boot"
+readonly VERIFY_BOOT_INFO="$SOURCE_DIR/.leaf3-cache/leaf3-boot-info.txt"
+readonly BUILT_DTBO_INFO="$SOURCE_DIR/.leaf3-cache/leaf3-built-dtbo-info.txt"
+readonly STOCK_DTBO_INFO="$SOURCE_DIR/.leaf3-cache/leaf3-stock-dtbo-info.txt"
 readonly RAMDISK_LIST="$SOURCE_DIR/.leaf3-cache/leaf3-ramdisk.list"
+readonly AVBTOOL="$SOURCE_DIR/out/host/linux-x86/bin/avbtool"
 readonly OUTPUT_FILES=(boot.img dtbo.img system.img product.img system_ext.img vbmeta.img)
 
 for output_file in "${OUTPUT_FILES[@]}"; do
@@ -386,10 +403,10 @@ for output_file in "${OUTPUT_FILES[@]}"; do
 done
 [[ -s "$PRODUCT_OUT/system/framework/org.lineageos.platform-res.apk" ]] || \
   die "system is missing org.lineageos.platform-res.apk; the product must inherit the Lineage common configuration"
-[[ -x "$PRODUCT_OUT/system/bin/leaf3_epdc_bridge" ]] || \
-  die "system is missing the Leaf3 SurfaceFlinger-to-EPDC display bridge"
-[[ -s "$PRODUCT_OUT/system/etc/init/leaf3_epdc_bridge.rc" ]] || \
-  die "system is missing the Leaf3 EPDC bridge init service"
+[[ -x "$PRODUCT_OUT/system_ext/bin/leaf3_epdc_bridge" ]] || \
+  die "system_ext is missing the Leaf3 SurfaceFlinger-to-EPDC display bridge"
+[[ -s "$PRODUCT_OUT/system_ext/etc/init/leaf3_epdc_bridge.rc" ]] || \
+  die "system_ext is missing the Leaf3 EPDC bridge init service"
 [[ -x "$PRODUCT_OUT/system/bin/leaf3-refresh" ]] || \
   die "system is missing the Leaf3 refresh-mode control tool"
 [[ -x "$PRODUCT_OUT/system/bin/leaf3-frontlight" ]] || \
@@ -400,19 +417,58 @@ python3 "$TARGET_DEVICE_DIR/tools/patch-systemui-assist-handler.py" --check \
   "$ASSIST_MANAGER_SOURCE"
 python3 "$TARGET_DEVICE_DIR/tools/patch-vintf-kernel-matrix.py" --check \
   "$PRODUCT_OUT/system/etc/vintf/compatibility_matrix.5.xml"
-grep -Fxq 'ro.adb.secure=0' "$PRODUCT_OUT/system/etc/prop.default" || \
-  die "bring-up build did not disable ADB authentication in system/etc/prop.default"
+grep -Fxq 'ro.adb.secure=1' "$PRODUCT_OUT/system/etc/prop.default" || \
+  die "build did not enable authenticated ADB in system/etc/prop.default"
+[[ -s "$PRODUCT_OUT/system_ext/etc/selinux/system_ext_sepolicy.cil" ]] || \
+  die "system_ext is missing its SELinux policy"
+grep -Fq 'leaf3_epdc_bridge' \
+  "$PRODUCT_OUT/system_ext/etc/selinux/system_ext_sepolicy.cil" || \
+  die "system_ext policy is missing the Leaf3 EPDC bridge domain"
+grep -Fq 'leaf3_touch_driver_sysfs' \
+  "$PRODUCT_OUT/system_ext/etc/selinux/system_ext_sepolicy.cil" || \
+  die "system_ext policy is missing the Leaf3 touchscreen wake workaround"
+grep -Fq 'leaf3_wakeup_sysfs' \
+  "$PRODUCT_OUT/system_ext/etc/selinux/system_ext_sepolicy.cil" || \
+  die "system_ext policy is missing the stock-driver wakeup labels"
+grep -Fq 'leaf3_epdc_bridge_exec' \
+  "$PRODUCT_OUT/system_ext/etc/selinux/system_ext_file_contexts" || \
+  die "system_ext file contexts do not label the Leaf3 EPDC bridge"
+grep -Fq 'leaf3_config_prop' \
+  "$PRODUCT_OUT/system_ext/etc/selinux/system_ext_property_contexts" || \
+  die "system_ext property contexts do not label the Leaf3 controls"
 [[ "$(stat -c %s "$PRODUCT_OUT/boot.img")" -le 100663296 ]] || \
   die "boot.img exceeds the 96 MiB partition size"
 [[ "$(stat -c %s "$PRODUCT_OUT/dtbo.img")" -le 25165824 ]] || \
   die "dtbo.img exceeds the 24 MiB partition size"
-cmp "$PRODUCT_OUT/dtbo.img" "$TARGET_DEVICE_DIR/prebuilt/dtbo.img"
+[[ -x "$AVBTOOL" ]] || die "missing host avbtool: $AVBTOOL"
+"$AVBTOOL" info_image --image "$PRODUCT_OUT/dtbo.img" > "$BUILT_DTBO_INFO"
+"$AVBTOOL" info_image --image "$TARGET_DEVICE_DIR/prebuilt/dtbo.img" \
+  > "$STOCK_DTBO_INFO"
+grep -Eq '^[[:space:]]*Partition Name:[[:space:]]+dtbo$' \
+  "$BUILT_DTBO_INFO" || \
+  die "built dtbo.img has no AVB hash descriptor for the dtbo partition"
+built_dtbo_payload_size="$(
+  awk '/^Original image size:/ { print $4; exit }' "$BUILT_DTBO_INFO"
+)"
+stock_dtbo_payload_size="$(
+  awk '/^Original image size:/ { print $4; exit }' "$STOCK_DTBO_INFO"
+)"
+[[ "$built_dtbo_payload_size" =~ ^[1-9][0-9]*$ ]] || \
+  die "could not determine the built DTBO payload size"
+[[ "$built_dtbo_payload_size" == "$stock_dtbo_payload_size" ]] || \
+  die "built and stock DTBO payload sizes differ"
+cmp -n "$built_dtbo_payload_size" \
+  "$PRODUCT_OUT/dtbo.img" "$TARGET_DEVICE_DIR/prebuilt/dtbo.img" || \
+  die "built DTBO payload differs from the checksum-pinned stock image"
 
 rm -rf -- "$VERIFY_DIR"
 mkdir -p "$VERIFY_DIR"
 python3 "$SOURCE_DIR/system/tools/mkbootimg/unpack_bootimg.py" \
   --boot_img "$PRODUCT_OUT/boot.img" \
-  --out "$VERIFY_DIR" >/dev/null
+  --out "$VERIFY_DIR" > "$VERIFY_BOOT_INFO"
+if grep -Fq 'androidboot.selinux=permissive' "$VERIFY_BOOT_INFO"; then
+  die "boot.img still forces SELinux permissive mode"
+fi
 cmp "$VERIFY_DIR/kernel" "$TARGET_DEVICE_DIR/prebuilt/kernel"
 cmp "$VERIFY_DIR/dtb" "$TARGET_DEVICE_DIR/prebuilt/dtb/leaf3.dtb"
 gzip -dc "$VERIFY_DIR/ramdisk" | cpio -t > "$RAMDISK_LIST"

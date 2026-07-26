@@ -1,11 +1,15 @@
-service leaf3-epdc-bridge /system/bin/leaf3_epdc_bridge
+service leaf3-epdc-bridge /system_ext/bin/leaf3_epdc_bridge
     class late_start
-    user root
-    group root graphics input
-    # The preserved stock vendor policy cannot contain a new device domain.
-    # Run in init's existing domain during permissive bring-up.
-    seclabel u:r:init:s0
+    user system
+    group graphics input
     disabled
 
 on property:sys.boot_completed=1
+    restorecon /dev/ebc
+    chown system graphics /dev/ebc
+    chmod 0660 /dev/ebc
+    chown system graphics /sys/bus/i2c/drivers/cyttsp5_i2c_adapter/unbind
+    chmod 0660 /sys/bus/i2c/drivers/cyttsp5_i2c_adapter/unbind
+    chown system graphics /sys/bus/i2c/drivers/cyttsp5_i2c_adapter/bind
+    chmod 0660 /sys/bus/i2c/drivers/cyttsp5_i2c_adapter/bind
     start leaf3-epdc-bridge
