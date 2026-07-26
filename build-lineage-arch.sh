@@ -413,6 +413,14 @@ done
   die "system is missing the Leaf3 frontlight control tool"
 [[ -s "$PRODUCT_OUT/system_ext/priv-app/Leaf3Controls/Leaf3Controls.apk" ]] || \
   die "system_ext is missing the Leaf3 Controls app"
+readonly LEAF3_PRIVAPP_PERMISSIONS="$PRODUCT_OUT/system_ext/etc/permissions/privapp-permissions-org.lineageos.leaf3controls.xml"
+[[ -s "$LEAF3_PRIVAPP_PERMISSIONS" ]] || \
+  die "system_ext is missing the Leaf3 Controls privileged-permission allowlist"
+grep -Fq 'android.permission.CONTROL_DISPLAY_COLOR_TRANSFORMS' \
+  "$LEAF3_PRIVAPP_PERMISSIONS" || \
+  die "Leaf3 Controls allowlist is missing display color-transform access"
+grep -Fq 'android.permission.REAL_GET_TASKS' "$LEAF3_PRIVAPP_PERMISSIONS" || \
+  die "Leaf3 Controls allowlist is missing foreground-task access"
 python3 "$TARGET_DEVICE_DIR/tools/patch-systemui-assist-handler.py" --check \
   "$ASSIST_MANAGER_SOURCE"
 python3 "$TARGET_DEVICE_DIR/tools/patch-vintf-kernel-matrix.py" --check \

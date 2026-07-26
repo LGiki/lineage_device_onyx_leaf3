@@ -7,11 +7,18 @@ refresh_property=sys.leaf3.full_refresh
 clear_on_sleep_property=persist.sys.leaf3.clear_on_sleep
 idle_policy_property=persist.sys.leaf3.idle_policy
 cleanup_policy_property=persist.sys.leaf3.cleanup_policy
+content_aware_property=persist.sys.leaf3.content_aware
+scroll_detect_property=persist.sys.leaf3.scroll_detect
+capture_mode_property=persist.sys.leaf3.capture_mode
+active_capture_mode_property=sys.leaf3.stat.capture_mode
 
 usage() {
     echo "usage: leaf3-refresh {balanced|normal|speed|a2|regal|full|clear-on-sleep|retain-on-sleep|animations-off|animations-on|status}" >&2
     echo "       leaf3-refresh idle {responsive|balanced|battery}" >&2
     echo "       leaf3-refresh cleanup {quality|balanced|manual}" >&2
+    echo "       leaf3-refresh content-aware {on|off}" >&2
+    echo "       leaf3-refresh scroll-detect {on|off}" >&2
+    echo "       leaf3-refresh capture poll" >&2
     exit 2
 }
 
@@ -36,6 +43,45 @@ case "${1:-status}" in
             quality|balanced|manual)
                 setprop "$cleanup_policy_property" "$2"
                 echo "Leaf3 ghost-cleanup policy: $2"
+                ;;
+            *)
+                usage
+                ;;
+        esac
+        ;;
+    content-aware)
+        case "${2:-}" in
+            on|off)
+                [ "$2" = on ] && value=1 || value=0
+                setprop "$content_aware_property" "$value"
+                echo "Leaf3 content-aware waveform selection: $2"
+                ;;
+            *)
+                usage
+                ;;
+        esac
+        ;;
+    scroll-detect)
+        case "${2:-}" in
+            on|off)
+                [ "$2" = on ] && value=1 || value=0
+                setprop "$scroll_detect_property" "$value"
+                echo "Leaf3 scroll detection: $2"
+                ;;
+            *)
+                usage
+                ;;
+        esac
+        ;;
+    capture)
+        case "${2:-}" in
+            poll)
+                setprop "$capture_mode_property" "$2"
+                echo "Leaf3 preferred capture source: $2"
+                ;;
+            stream)
+                echo "The compositor stream is disabled on this vendor graphics stack" >&2
+                exit 1
                 ;;
             *)
                 usage
@@ -76,6 +122,10 @@ case "${1:-status}" in
         clear_on_sleep="$(getprop "$clear_on_sleep_property")"
         idle_policy="$(getprop "$idle_policy_property")"
         cleanup_policy="$(getprop "$cleanup_policy_property")"
+        content_aware="$(getprop "$content_aware_property")"
+        scroll_detect="$(getprop "$scroll_detect_property")"
+        capture_mode="$(getprop "$capture_mode_property")"
+        active_capture_mode="$(getprop "$active_capture_mode_property")"
         case "$mode" in
             balanced|normal|speed|a2|regal) ;;
             *) mode=balanced ;;
@@ -93,12 +143,19 @@ case "${1:-status}" in
             *) cleanup_policy=balanced ;;
         esac
         effective_mode="${active_mode:-${mode:-balanced}}"
+        [ "$content_aware" = 0 ] || content_aware=1
+        [ "$scroll_detect" = 0 ] || scroll_detect=1
+        capture_mode=poll
         echo "Leaf3 global refresh mode: $mode"
         echo "Active refresh override: ${active_mode:-none}"
         echo "Active refresh source: ${active_source:-default}"
         echo "Effective refresh mode: $effective_mode"
-        echo "Idle capture policy: $idle_policy"
+        echo "Preferred capture source: $capture_mode"
+        echo "Active capture source: ${active_capture_mode:-starting}"
+        echo "Idle polling fallback policy: $idle_policy"
         echo "Ghost-cleanup policy: $cleanup_policy"
+        echo "Content-aware waveform selection: $content_aware"
+        echo "Scroll detection: $scroll_detect"
         echo "Clear retained frame on sleep: ${clear_on_sleep:-1}"
         ;;
     *)

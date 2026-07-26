@@ -31,6 +31,7 @@ AB_OTA_PARTITIONS += \
 # output directory; using root/ here installs into the product root instead of
 # boot.img and leaves first-stage init without an fstab.
 PRODUCT_COPY_FILES += \
+    $(LOCAL_PATH)/app/privapp-permissions-org.lineageos.leaf3controls.xml:$(TARGET_COPY_OUT_SYSTEM_EXT)/etc/permissions/privapp-permissions-org.lineageos.leaf3controls.xml \
     $(LOCAL_PATH)/rootdir/etc/fstab.emmc:$(TARGET_COPY_OUT_RAMDISK)/fstab.emmc \
     $(LOCAL_PATH)/prebuilt/eink_waveform.wbf:$(TARGET_COPY_OUT_RAMDISK)/waveform/eink_waveform.wbf
 

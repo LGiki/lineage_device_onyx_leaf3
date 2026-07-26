@@ -8,12 +8,18 @@ system_public_prop(leaf3_stats_prop)
 
 init_daemon_domain(leaf3_epdc_bridge)
 
-# Capture the composed display from SurfaceFlinger.
+# Create the mirror display and capture the composed display from
+# SurfaceFlinger.
 binder_use(leaf3_epdc_bridge)
 binder_call(leaf3_epdc_bridge, surfaceflinger)
 allow leaf3_epdc_bridge surfaceflinger_service:service_manager find;
 
-# Lock and read GraphicBuffers returned by SurfaceFlinger.
+# The mirror display's BufferQueue lives in this process, so SurfaceFlinger
+# calls in to dequeue and queue every composed frame.
+binder_call(surfaceflinger, leaf3_epdc_bridge)
+
+# Lock and read GraphicBuffers, which the bridge now allocates itself as the
+# consumer of the mirror BufferQueue rather than only importing them.
 hwbinder_use(leaf3_epdc_bridge)
 hal_client_domain(leaf3_epdc_bridge, hal_graphics_allocator)
 allow leaf3_epdc_bridge hal_graphics_allocator:fd use;

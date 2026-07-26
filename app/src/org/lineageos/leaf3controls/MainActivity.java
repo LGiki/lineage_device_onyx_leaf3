@@ -43,6 +43,7 @@ public final class MainActivity extends Activity {
     final Switch frontlightEnabled = findViewById(R.id.frontlight_enabled);
     final Switch disableAnimations = findViewById(R.id.disable_animations);
     final Switch clearOnSleep = findViewById(R.id.clear_on_sleep);
+    final Switch grayscale = findViewById(R.id.grayscale);
     followAndroidBrightness = findViewById(R.id.follow_android_brightness);
     brightness = findViewById(R.id.brightness);
     temperature = findViewById(R.id.temperature);
@@ -69,6 +70,7 @@ public final class MainActivity extends Activity {
         SystemProperties.getInt(FRONTLIGHT_ENABLED, 1) != 0);
     disableAnimations.setChecked(animationsDisabled());
     clearOnSleep.setChecked(SystemProperties.getInt(CLEAR_ON_SLEEP, 1) != 0);
+    grayscale.setChecked(Leaf3Settings.isGrayscaleEnabled());
     followAndroidBrightness.setChecked(brightnessOverride < 0);
     brightness.setProgress(brightnessOverride < 0 ? 50 : brightnessOverride);
     brightness.setEnabled(brightnessOverride >= 0);
@@ -154,6 +156,17 @@ public final class MainActivity extends Activity {
           public void onCheckedChanged(CompoundButton button, boolean checked) {
             if (!loading) {
               setProperty(CLEAR_ON_SLEEP, checked ? "1" : "0");
+            }
+          }
+        });
+
+    grayscale.setOnCheckedChangeListener(
+        new CompoundButton.OnCheckedChangeListener() {
+          @Override
+          public void onCheckedChanged(CompoundButton button, boolean checked) {
+            if (!loading) {
+              setProperty(Leaf3Settings.GRAYSCALE, checked ? "1" : "0");
+              Leaf3Settings.applyGrayscale(MainActivity.this, checked);
             }
           }
         });
@@ -338,12 +351,18 @@ public final class MainActivity extends Activity {
         Leaf3Settings.isRefreshMode(activeMode) ? activeMode : globalMode;
     final String source = SystemProperties.get(
         Leaf3Settings.ACTIVE_REFRESH_SOURCE, "default");
+    final String captureMode = SystemProperties.get(
+        Leaf3Settings.CAPTURE_MODE_ACTIVE, "starting");
     final long captures = getStat("captures");
     final long comparisons = getStat("comparisons");
     final long changed = getStat("changed");
     final long partial = getStat("partial");
     final long full = getStat("full");
     final long pixels = getStat("pixels");
+    final long dropped = getStat("dropped");
+    final long split = getStat("split");
+    final long bilevel = getStat("bilevel");
+    final long scroll = getStat("scroll");
     final long captureTime = getStat("capture_us");
     final long compareTime = getStat("compare_us");
     final long submitTime = getStat("submit_us");
@@ -353,12 +372,17 @@ public final class MainActivity extends Activity {
         R.string.diagnostics_value,
         Leaf3Settings.modeLabel(this, effectiveMode),
         source,
+        captureMode,
         SystemProperties.get(Leaf3Settings.IDLE_POLICY, "balanced"),
         SystemProperties.get(Leaf3Settings.CLEANUP_POLICY, "balanced"),
         captures,
         changed,
+        dropped,
+        scroll,
         partial,
         full,
+        split,
+        bilevel,
         pixels,
         averageMicros(captureTime, captures),
         averageMicros(compareTime, comparisons),

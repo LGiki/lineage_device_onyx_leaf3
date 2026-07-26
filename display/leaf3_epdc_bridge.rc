@@ -2,6 +2,7 @@ service leaf3-epdc-bridge /system_ext/bin/leaf3_epdc_bridge
     class late_start
     user system
     group graphics input
+    task_profiles ProcessCapacityHigh HighPerformance
     disabled
 
 on property:sys.boot_completed=1

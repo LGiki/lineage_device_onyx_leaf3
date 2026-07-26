@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.SystemUI"
+        parent="@*android:style/Theme.DeviceDefault.QuickSettings">
+        <item name="android:colorControlHighlight">@android:color/transparent</item>
+        <item name="android:colorEdgeEffect">@android:color/transparent</item>
+    </style>
+
+    <style name="Theme.SystemUI.Light" parent="@style/Theme.SystemUI">
+        <item name="android:colorControlHighlight">@android:color/transparent</item>
+        <item name="android:colorEdgeEffect">@android:color/transparent</item>
+    </style>
+</resources>

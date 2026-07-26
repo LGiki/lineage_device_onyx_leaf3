@@ -223,6 +223,14 @@
             android:textColor="#000000"
             android:textSize="18sp" />
 
+        <Switch
+            android:id="@+id/grayscale"
+            android:layout_width="match_parent"
+            android:layout_height="64dp"
+            android:text="@string/grayscale"
+            android:textColor="#000000"
+            android:textSize="18sp" />
+
         <View
             android:layout_width="match_parent"
             android:layout_height="1dp"

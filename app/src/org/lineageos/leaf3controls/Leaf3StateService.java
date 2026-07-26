@@ -14,6 +14,7 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.os.RemoteException;
 import android.os.SystemProperties;
 import android.provider.Settings;
 import android.util.Log;
@@ -71,10 +72,13 @@ public final class Leaf3StateService extends Service {
         Settings.System.getUriFor(Settings.System.SCREEN_BRIGHTNESS), false,
         brightnessObserver);
     try {
-      ActivityTaskManager.getInstance().registerTaskStackListener(
+      ActivityTaskManager.getService().registerTaskStackListener(
           taskStackListener);
-    } catch (RuntimeException exception) {
+    } catch (RemoteException | RuntimeException exception) {
       Log.e(TAG, "Could not register task-stack listener", exception);
+    }
+    if (Leaf3Settings.hasGrayscalePreference()) {
+      Leaf3Settings.applyGrayscale(this, Leaf3Settings.isGrayscaleEnabled());
     }
     publishState();
     updateForegroundPackage();
@@ -106,9 +110,9 @@ public final class Leaf3StateService extends Service {
       getContentResolver().unregisterContentObserver(brightnessObserver);
     }
     try {
-      ActivityTaskManager.getInstance().unregisterTaskStackListener(
+      ActivityTaskManager.getService().unregisterTaskStackListener(
           taskStackListener);
-    } catch (RuntimeException exception) {
+    } catch (RemoteException | RuntimeException exception) {
       Log.w(TAG, "Could not unregister task-stack listener", exception);
     }
     clearActiveRefreshMode();
@@ -141,14 +145,14 @@ public final class Leaf3StateService extends Service {
     String packageName = "";
     try {
       final List<ActivityManager.RunningTaskInfo> tasks =
-          ActivityTaskManager.getInstance().getTasks(1);
-      if (!tasks.isEmpty()) {
+          ActivityTaskManager.getService().getTasks(1);
+      if (tasks != null && !tasks.isEmpty()) {
         final ComponentName topActivity = tasks.get(0).topActivity;
         if (topActivity != null) {
           packageName = topActivity.getPackageName();
         }
       }
-    } catch (RuntimeException exception) {
+    } catch (RemoteException | RuntimeException exception) {
       Log.e(TAG, "Could not determine foreground package", exception);
     }
 

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Material">
+        <item name="colorControlHighlight">@android:color/transparent</item>
+        <item name="colorEdgeEffect">@android:color/transparent</item>
+    </style>
+
+    <style name="Theme.Material.Light" parent="Theme.Light">
+        <item name="colorControlHighlight">@android:color/transparent</item>
+        <item name="colorEdgeEffect">@android:color/transparent</item>
+    </style>
+
+    <style name="ThemeOverlay.Material.Light">
+        <item name="colorControlHighlight">@android:color/transparent</item>
+        <item name="colorEdgeEffect">@android:color/transparent</item>
+    </style>
+
+    <style name="ThemeOverlay.Material.Dark">
+        <item name="colorControlHighlight">@android:color/transparent</item>
+        <item name="colorEdgeEffect">@android:color/transparent</item>
+    </style>
+</resources>

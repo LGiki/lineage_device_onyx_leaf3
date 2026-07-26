@@ -422,11 +422,17 @@ The stock ROM solves this with ONYX modifications embedded directly in
 `framework.jar` and `services.jar` (`OECService` and `OnyxDeviceService`).
 Those core stock jars are not binary-compatible replacements for LineageOS.
 This device tree instead builds `leaf3_epdc_bridge`, a small native service
-which captures the composed primary display and forwards changed rectangles
-to `/dev/ebc`. It uses one full GC16 refresh at startup. After that it monitors
-the Cypress `cyttsp5_mt` input device, wakes immediately for touch events, and
-waits 32 ms for SurfaceFlinger to compose the resulting frame before capturing
-it. Timer polling remains as a fallback for non-touch changes.
+which periodically captures the primary display with
+`ScreenshotClient::capture()` and forwards changed regions to `/dev/ebc`. It
+uses one full GC16 refresh at startup and then sends one coalesced damage
+rectangle per frame.
+
+An event-driven `BufferItemConsumer` implementation remains in the source for
+controlled development, but it is not selected in production. On this
+Qualcomm/ONYX stack, an active virtual display combined with the private EBC
+path becomes unstable during composition load. The active source is reported
+by `leaf3-refresh status`, Leaf3 Controls, and
+`sys.leaf3.stat.capture_mode`.
 
 The bridge exposes the stock ONYX waveform strategies globally. The values
 were recovered from the stock `ViewUpdateHelper` implementation rather than
@@ -434,54 +440,60 @@ guessed:
 
 | Mode | Stock waveform | Intended use |
 | --- | --- | --- |
-| `balanced` | A2 while interacting, AUTO after settling | Default; responsive with automatic ghost cleanup |
+| `balanced` | Content-selected DU/GC16, A2 while scrolling | Default; crisp flat UI and full grayscale for images |
 | `normal` | AUTO | Highest general UI quality |
 | `speed` | DU | Faster monochrome page and list changes |
 | `a2` | ANIM/A2 | Fastest interaction, with more ghosting and less grayscale |
 | `regal` | REGAL | Text-oriented partial updates with reduced ghosting |
 
-Fast updates mark the panel as needing cleanup. The default Balanced cleanup
-policy submits one full-screen GC16 update after four unchanged capture cycles
-(about 320–560 ms depending on mode), or 20 consecutive fast updates. Quality
-uses thresholds of two frames and ten updates. Manual suppresses automatic
-cleanup while preserving startup, wake, sleep-clear, and explicit full
-refreshes. A partial AUTO update proved unable to remove retained launcher and
-Settings frames after a long A2 scroll. The full cleanup flashes more visibly,
-but restores a readable panel after interaction.
+Balanced classifies each changed region from a sampled luminance histogram.
+Effectively bi-level text and flat UI use undithered DU; multi-level content
+uses dithered GC16. Explicit Normal, Speed, A2, and Regal modes retain their
+requested waveform, while dithering is still disabled for classified
+bi-level regions. Automatic classification is opt-in with
+`leaf3-refresh content-aware on`; the production default retains the
+known-good dithered waveform behavior.
+
+Fast updates mark the panel as needing cleanup. Balanced submits one
+full-screen GC16 update after the compositor has been quiet for 600 ms;
+Quality uses 300 ms. Every changed frame extends that deadline, so continuous
+movement never inserts a cleanup flash between scroll frames. Manual
+suppresses automatic cleanup while preserving startup, wake, sleep-clear, and
+explicit full refreshes. Row hashes recognize a constant vertical offset
+during touch-driven scrolling; scrolling uses A2 and defers the cleanup until
+movement stops. Row-hash scroll detection is also opt-in with
+`leaf3-refresh scroll-detect on`.
 
 The ONYX ioctl embeds an `mxcfb_rect`, whose binary field order is `top`,
-`left`, `width`, `height`. An earlier bridge revision used `left`, `top`; full
-updates appeared to work because both coordinates were zero, but scrolling
-produced invalid requests such as `x=1537, width=1264`. The kernel rejected
-those requests and the panel appeared frozen during list movement. The bridge
-now uses the correct ABI order. Speed and A2 poll compositor changes every
-80 ms while content remains active, Balanced uses 100 ms, and the slower
-Normal and Regal quality modes use 140 ms.
+`left`, `width`, `height`. The bridge tracks damage on a 32-pixel tile grid and
+uses bionic's vectorized `memcmp`, then coalesces dirty tiles into one update
+rectangle. Only that rectangle is copied into the persistent EBC framebuffer
+and previous-frame cache. The bridge enforces at least 100 ms between every
+EBC ioctl, including cleanup passes, to keep the undocumented vendor queue
+within the cadence used by the known-good bridge.
 
-After any touch event, the bridge keeps the active capture cadence for six
-frames. Reader applications such as KOReader may publish a completed page
-later than the initial 32 ms touch-settle delay; without this probe burst, a
-missed first capture falls immediately back to the 500 ms idle interval.
-Balanced treats a frame found during the burst as interaction, displays it
-quickly with A2, then performs the usual GC16 cleanup after the page settles.
-After ten unchanged active captures, idle polling progressively backs off.
-Responsive caps the delay at one second, Balanced at two seconds, and Battery
-at five seconds. The input-device poll wakes immediately for touch at every
-stage; only background changes such as clocks or notifications can wait for
-the selected maximum interval.
+Responsive, Balanced, and Battery cap fallback idle polling at one, two, and
+five seconds. The Cypress `cyttsp5_mt` monitor wakes that fallback immediately
+for touch. While the display is off, the bridge blocks on
+`sys.leaf3.interactive` rather than waking twice a second. Runtime settings are
+cached against Android property serials, avoiding repeated property-service
+lookups on every frame.
 
-For partial updates, unchanged rows are rejected with an optimized memory
-comparison. Only the changed bounding rectangle is copied into the persistent
-EBC framebuffer and previous-frame cache. Earlier revisions copied the entire
-8 MiB screen into both buffers after every change, even when only a button or
-status icon changed. The persistent buffer still contains a complete current
-frame, so periodic full GC16 cleanup remains correct without another
-full-screen copy.
+`EBC_GET_BUFFER_INFO` is logged at startup to support an on-device probe for a
+narrower grayscale transport. The bridge deliberately keeps the known-good
+32-bit RGBA mapping until the undocumented format fields are confirmed.
 
-Rebuild the images. The refresh/frontlight bridge changes `system.img`, the
-Settings shortcut fix changes `system_ext.img`, and the build regenerates
-`vbmeta.img` for their new hashes. `boot.img`, `dtbo.img`, and `product.img`
-are unchanged by these fixes:
+Product overlays disable the wallpaper service, doze/AOD drawing, automatic
+brightness, navigation-bar scrims, touch ripples, and edge glow. The preserved
+vendor SurfaceFlinger configuration remains authoritative because it matches
+the stock Qualcomm allocator and HWC. The preserved vendor init already
+publishes the stock 300 DPI as `ro.sf.lcd_density`, so this tree does not
+replace it with a guessed value.
+
+Rebuild the images. The command-line tools change `system.img`; the bridge,
+policy, and Leaf3 Controls change `system_ext.img`; framework and SystemUI
+overlays plus the SurfaceFlinger property change `product.img`. The build
+regenerates `vbmeta.img` for their new hashes:
 
 ```sh
 ./build-lineage-arch.sh \
@@ -506,6 +518,7 @@ The service property should be `running` and the log should contain:
 
 ```text
 mapped EBC buffer for 1264x1680
+capture mode: periodic screenshot
 touch wake-up enabled on /dev/input/event3 (cyttsp5_mt)
 ```
 
@@ -528,9 +541,11 @@ adb shell leaf3-refresh idle battery
 adb shell leaf3-refresh cleanup quality
 adb shell leaf3-refresh cleanup balanced
 adb shell leaf3-refresh cleanup manual
+adb shell leaf3-refresh capture poll
 ```
 
-The selections persist across reboots. Request a one-time full GC16 cleanup
+Idle capture affects only polling fallback. The selections persist across
+reboots. Request a one-time full GC16 cleanup
 after visible ghosting with:
 
 ```sh
@@ -663,6 +678,7 @@ It provides:
 - A one-tap full GC16 screen cleanup.
 - Refresh-mode and clean-screen Quick Settings tiles.
 - Native bridge counters and timing diagnostics.
+- An opt-in global grayscale switch using SurfaceFlinger's color matrix.
 - Frontlight on/off.
 - A switch to follow Android's standard brightness slider.
 - A manual frontlight percentage override.
@@ -810,9 +826,9 @@ adb shell dmesg |
 adb shell dumpsys SurfaceFlinger > leaf3-surfaceflinger.txt
 ```
 
-This bridge is still a bring-up implementation. A production port should
-integrate damage and E-Ink waveform selection directly with the compositor
-instead of periodically capturing its output.
+The primary path is event driven. Keep the polling fallback available while
+validating virtual-display composition and the stock graphics allocator on
+device.
 
 ### Settings shortcut crashes SystemUI
 

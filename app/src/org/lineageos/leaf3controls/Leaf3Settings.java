@@ -2,12 +2,17 @@ package org.lineageos.leaf3controls;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.hardware.display.ColorDisplayManager;
+import android.os.SystemProperties;
+import android.util.Log;
 
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
 
 final class Leaf3Settings {
+  private static final String TAG = "Leaf3Settings";
+
   static final String GLOBAL_REFRESH_MODE =
       "persist.sys.leaf3.refresh_mode";
   static final String ACTIVE_REFRESH_MODE =
@@ -17,6 +22,13 @@ final class Leaf3Settings {
   static final String FULL_REFRESH = "sys.leaf3.full_refresh";
   static final String IDLE_POLICY = "persist.sys.leaf3.idle_policy";
   static final String CLEANUP_POLICY = "persist.sys.leaf3.cleanup_policy";
+  static final String CONTENT_AWARE = "persist.sys.leaf3.content_aware";
+  static final String SCROLL_DETECT = "persist.sys.leaf3.scroll_detect";
+  static final String GRAYSCALE = "persist.sys.leaf3.grayscale";
+  static final String CAPTURE_MODE_ACTIVE = "sys.leaf3.stat.capture_mode";
+
+  private static final int SATURATION_GRAYSCALE = 0;
+  private static final int SATURATION_FULL = 100;
 
   static final String MODE_BALANCED = "balanced";
   static final String MODE_NORMAL = "normal";
@@ -33,6 +45,31 @@ final class Leaf3Settings {
 
   static boolean isRefreshMode(String mode) {
     return VALID_MODES.contains(mode);
+  }
+
+  static boolean isGrayscaleEnabled() {
+    return SystemProperties.getInt(GRAYSCALE, 0) != 0;
+  }
+
+  static boolean hasGrayscalePreference() {
+    return !SystemProperties.get(GRAYSCALE, "").isEmpty();
+  }
+
+  // Colour maps to a narrow band of muddy mid-greys on a 16-level panel.
+  // Desaturating in SurfaceFlinger's colour matrix costs nothing per frame.
+  static void applyGrayscale(Context context, boolean enabled) {
+    final ColorDisplayManager manager =
+        context.getSystemService(ColorDisplayManager.class);
+    if (manager == null) {
+      Log.w(TAG, "ColorDisplayManager is unavailable");
+      return;
+    }
+    try {
+      manager.setSaturationLevel(enabled ? SATURATION_GRAYSCALE
+                                         : SATURATION_FULL);
+    } catch (RuntimeException exception) {
+      Log.e(TAG, "Could not set the display saturation level", exception);
+    }
   }
 
   static String getProfile(Context context, String packageName) {
