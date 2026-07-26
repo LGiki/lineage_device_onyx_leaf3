@@ -1218,6 +1218,49 @@ public:
     return result;
   }
 
+  uint64_t dirtyArea() const {
+    uint64_t area = 0;
+    for (uint32_t row = 0; row < rows_; ++row) {
+      const uint32_t tile_height =
+          std::min(kTileSize, height_ - row * kTileSize);
+      for (uint32_t column = 0; column < columns_; ++column) {
+        if (tiles_[static_cast<size_t>(row) * columns_ + column] == 0) {
+          continue;
+        }
+        const uint32_t tile_width =
+            std::min(kTileSize, width_ - column * kTileSize);
+        area += static_cast<uint64_t>(tile_width) * tile_height;
+      }
+    }
+    return area;
+  }
+
+  // Visit horizontally contiguous dirty tiles without coalescing unrelated
+  // rows. This is used for memory copies only; the EBC driver still receives
+  // the single, conservatively paced update rectangle.
+  template <typename Callback> void forEachDirtyRun(Callback callback) const {
+    for (uint32_t row = 0; row < rows_; ++row) {
+      uint32_t column = 0;
+      while (column < columns_) {
+        if (tiles_[static_cast<size_t>(row) * columns_ + column] == 0) {
+          ++column;
+          continue;
+        }
+        const uint32_t start = column;
+        while (column < columns_ &&
+               tiles_[static_cast<size_t>(row) * columns_ + column] != 0) {
+          ++column;
+        }
+        callback(ChangedRect{
+            start * kTileSize,
+            row * kTileSize,
+            std::min(width_, column * kTileSize),
+            std::min(height_, (row + 1) * kTileSize),
+        });
+      }
+    }
+  }
+
   // Merges dirty tiles into at most kMaxUpdateRects rectangles, falling back
   // to the bounding box when splitting would not save enough panel area.
   std::vector<ChangedRect> rectangles() const {
@@ -1908,11 +1951,23 @@ int main() {
           ++stats.split_frames;
         }
 
-        // All regional updates share one mmap'd source buffer. Stage the
-        // complete frame damage before the first ioctl so a later rectangle
-        // cannot mutate memory while the driver is consuming an earlier one.
-        for (const ChangedRect &rect : rects) {
-          ebc.stage(frame.pixels, frame.stride, rect);
+        // A clock and a keyboard can make the safe, single update rectangle
+        // span nearly the whole panel even though only a few tiles changed.
+        // The persistent EBC mmap already holds the rest of the frame, so
+        // copy sparse tiles rather than the large bounding rectangle. Dense
+        // changes keep the cheaper contiguous copy path.
+        const uint64_t update_area = rects.front().area();
+        const bool sparse_damage =
+            !full_refresh && damage.dirtyArea() * kSplitBenefitDenominator <
+                                 update_area * kSplitBenefitNumerator;
+        if (sparse_damage) {
+          damage.forEachDirtyRun([&](const ChangedRect &rect) {
+            ebc.stage(frame.pixels, frame.stride, rect);
+          });
+        } else {
+          for (const ChangedRect &rect : rects) {
+            ebc.stage(frame.pixels, frame.stride, rect);
+          }
         }
 
         bool submitted_any = false;
@@ -1991,12 +2046,21 @@ int main() {
             stats.updated_pixels += rect.area();
           }
 
-          saveFrameRegion(frame.pixels, frame.width, frame.height, frame.stride,
-                          rect, &previous);
           scroll.invalidate(rect.top, rect.bottom);
         }
 
         if (submitted_any) {
+          if (sparse_damage) {
+            damage.forEachDirtyRun([&](const ChangedRect &rect) {
+              saveFrameRegion(frame.pixels, frame.width, frame.height,
+                              frame.stride, rect, &previous);
+            });
+          } else {
+            for (const ChangedRect &rect : rects) {
+              saveFrameRegion(frame.pixels, frame.width, frame.height,
+                              frame.stride, rect, &previous);
+            }
+          }
           first_refresh = false;
           pending_full_refresh = false;
           unchanged_frames = 0;

@@ -231,6 +231,22 @@
             android:textColor="#000000"
             android:textSize="18sp" />
 
+        <Switch
+            android:id="@+id/content_aware"
+            android:layout_width="match_parent"
+            android:layout_height="64dp"
+            android:text="@string/content_aware"
+            android:textColor="#000000"
+            android:textSize="18sp" />
+
+        <Switch
+            android:id="@+id/scroll_detection"
+            android:layout_width="match_parent"
+            android:layout_height="64dp"
+            android:text="@string/scroll_detection"
+            android:textColor="#000000"
+            android:textSize="18sp" />
+
         <View
             android:layout_width="match_parent"
             android:layout_height="1dp"

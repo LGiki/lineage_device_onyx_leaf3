@@ -26,6 +26,8 @@
     <string name="disable_animations">Disable Android animations (recommended)</string>
     <string name="clear_on_sleep">Clear retained page while sleeping</string>
     <string name="grayscale">Global grayscale UI</string>
+    <string name="content_aware">Crisp text and grayscale images (experimental)</string>
+    <string name="scroll_detection">Fast waveform while scrolling (experimental)</string>
     <string name="frontlight">Frontlight</string>
     <string name="frontlight_enabled">Frontlight enabled</string>
     <string name="follow_android_brightness">Follow Android brightness slider</string>

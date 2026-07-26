@@ -44,6 +44,8 @@ public final class MainActivity extends Activity {
     final Switch disableAnimations = findViewById(R.id.disable_animations);
     final Switch clearOnSleep = findViewById(R.id.clear_on_sleep);
     final Switch grayscale = findViewById(R.id.grayscale);
+    final Switch contentAware = findViewById(R.id.content_aware);
+    final Switch scrollDetection = findViewById(R.id.scroll_detection);
     followAndroidBrightness = findViewById(R.id.follow_android_brightness);
     brightness = findViewById(R.id.brightness);
     temperature = findViewById(R.id.temperature);
@@ -71,6 +73,10 @@ public final class MainActivity extends Activity {
     disableAnimations.setChecked(animationsDisabled());
     clearOnSleep.setChecked(SystemProperties.getInt(CLEAR_ON_SLEEP, 1) != 0);
     grayscale.setChecked(Leaf3Settings.isGrayscaleEnabled());
+    contentAware.setChecked(
+        SystemProperties.getInt(Leaf3Settings.CONTENT_AWARE, 0) != 0);
+    scrollDetection.setChecked(
+        SystemProperties.getInt(Leaf3Settings.SCROLL_DETECT, 0) != 0);
     followAndroidBrightness.setChecked(brightnessOverride < 0);
     brightness.setProgress(brightnessOverride < 0 ? 50 : brightnessOverride);
     brightness.setEnabled(brightnessOverride >= 0);
@@ -167,6 +173,26 @@ public final class MainActivity extends Activity {
             if (!loading) {
               setProperty(Leaf3Settings.GRAYSCALE, checked ? "1" : "0");
               Leaf3Settings.applyGrayscale(MainActivity.this, checked);
+            }
+          }
+        });
+
+    contentAware.setOnCheckedChangeListener(
+        new CompoundButton.OnCheckedChangeListener() {
+          @Override
+          public void onCheckedChanged(CompoundButton button, boolean checked) {
+            if (!loading) {
+              setProperty(Leaf3Settings.CONTENT_AWARE, checked ? "1" : "0");
+            }
+          }
+        });
+
+    scrollDetection.setOnCheckedChangeListener(
+        new CompoundButton.OnCheckedChangeListener() {
+          @Override
+          public void onCheckedChanged(CompoundButton button, boolean checked) {
+            if (!loading) {
+              setProperty(Leaf3Settings.SCROLL_DETECT, checked ? "1" : "0");
             }
           }
         });

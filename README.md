@@ -418,14 +418,17 @@ display and `DSI-2` is the real ONYX EPDC panel. Standard Qualcomm HWC renders
 Android to the dummy connector, which is why scrcpy works, but it does not
 submit those frames through the private `/dev/ebc` update interface.
 
-The stock ROM solves this with ONYX modifications embedded directly in
-`framework.jar` and `services.jar` (`OECService` and `OnyxDeviceService`).
-Those core stock jars are not binary-compatible replacements for LineageOS.
-This device tree instead builds `leaf3_epdc_bridge`, a small native service
-which periodically captures the primary display with
-`ScreenshotClient::capture()` and forwards changed regions to `/dev/ebc`. It
-uses one full GC16 refresh at startup and then sends one coalesced damage
-rectangle per frame.
+The stock ROM solves this with matched ONYX modifications across
+`framework.jar`, `libgui`, SurfaceFlinger, the graphics-common HIDL ABI, and
+the preserved Qualcomm composer service. Each surface carries a batch of
+five-integer EPDC entries (`left`, `top`, `right`, `bottom`, and waveform
+mode); SurfaceFlinger merges them and the vendor composer's `CommitEpdc`
+command submits the regions with the same HWC frame. Those core stock
+components are not binary-compatible replacements for LineageOS. This device
+tree instead builds `leaf3_epdc_bridge`, a small native service which
+periodically captures the primary display with `ScreenshotClient::capture()`
+and forwards changed regions to `/dev/ebc`. It uses one full GC16 refresh at
+startup and then sends one coalesced damage rectangle per frame.
 
 An event-driven `BufferItemConsumer` implementation remains in the source for
 controlled development, but it is not selected in production. On this
@@ -467,10 +470,13 @@ movement stops. Row-hash scroll detection is also opt-in with
 The ONYX ioctl embeds an `mxcfb_rect`, whose binary field order is `top`,
 `left`, `width`, `height`. The bridge tracks damage on a 32-pixel tile grid and
 uses bionic's vectorized `memcmp`, then coalesces dirty tiles into one update
-rectangle. Only that rectangle is copied into the persistent EBC framebuffer
-and previous-frame cache. The bridge enforces at least 100 ms between every
-EBC ioctl, including cleanup passes, to keep the undocumented vendor queue
-within the cadence used by the known-good bridge.
+rectangle. For sparse damage, only dirty tile runs are copied into the
+persistent EBC framebuffer and previous-frame cache; the unchanged pixels
+already stored inside the larger update rectangle remain valid. Dense damage
+uses contiguous rectangle copies. This reduces memory traffic without
+increasing the number of driver updates. The bridge enforces at least 100 ms
+between every EBC ioctl, including cleanup passes, to keep the undocumented
+vendor queue within the cadence used by the known-good bridge.
 
 Responsive, Balanced, and Battery cap fallback idle polling at one, two, and
 five seconds. The Cypress `cyttsp5_mt` monitor wakes that fallback immediately
@@ -679,6 +685,8 @@ It provides:
 - Refresh-mode and clean-screen Quick Settings tiles.
 - Native bridge counters and timing diagnostics.
 - An opt-in global grayscale switch using SurfaceFlinger's color matrix.
+- Opt-in content-aware waveform/dither selection for crisp text and images.
+- Opt-in row-hash scroll detection with deferred quality cleanup.
 - Frontlight on/off.
 - A switch to follow Android's standard brightness slider.
 - A manual frontlight percentage override.
