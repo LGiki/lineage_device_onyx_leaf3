@@ -23,6 +23,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -82,15 +83,24 @@ constexpr useconds_t kFastFrameDelayUs = 80000;
 constexpr useconds_t kBalancedFrameDelayUs = 100000;
 constexpr useconds_t kQualityFrameDelayUs = 140000;
 constexpr useconds_t kIdleFrameDelayUs = 500000;
+constexpr useconds_t kIdleOneSecondDelayUs = 1000000;
+constexpr useconds_t kIdleTwoSecondDelayUs = 2000000;
+constexpr useconds_t kIdleFiveSecondDelayUs = 5000000;
 constexpr useconds_t kTouchSettleDelayUs = 32000;
 constexpr useconds_t kRetryDelayUs = 1000000;
 constexpr uint32_t kIdleThresholdFrames = 10;
 constexpr uint32_t kCleanupAfterUnchangedFrames = 4;
 constexpr uint32_t kFastCleanupInterval = 20;
+constexpr uint32_t kQualityCleanupAfterUnchangedFrames = 2;
+constexpr uint32_t kQualityFastCleanupInterval = 10;
 constexpr uint32_t kInputProbeFrames = 6;
+constexpr int64_t kStatsPublishIntervalUs = 60000000;
 constexpr char kRefreshModeProperty[] = "persist.sys.leaf3.refresh_mode";
+constexpr char kActiveRefreshModeProperty[] = "sys.leaf3.active_refresh_mode";
 constexpr char kFullRefreshProperty[] = "sys.leaf3.full_refresh";
 constexpr char kClearOnSleepProperty[] = "persist.sys.leaf3.clear_on_sleep";
+constexpr char kIdlePolicyProperty[] = "persist.sys.leaf3.idle_policy";
+constexpr char kCleanupPolicyProperty[] = "persist.sys.leaf3.cleanup_policy";
 constexpr char kTouchInputName[] = "cyttsp5_mt";
 
 struct EbcBufferInfo {
@@ -125,6 +135,31 @@ enum class RefreshMode {
   kSpeed,
   kA2,
   kRegal,
+};
+
+enum class IdlePolicy {
+  kResponsive,
+  kBalanced,
+  kBattery,
+};
+
+enum class CleanupPolicy {
+  kQuality,
+  kBalanced,
+  kManual,
+};
+
+struct BridgeStats {
+  uint64_t captures = 0;
+  uint64_t comparisons = 0;
+  uint64_t changed_frames = 0;
+  uint64_t partial_updates = 0;
+  uint64_t full_updates = 0;
+  uint64_t updated_pixels = 0;
+  uint64_t capture_time_us = 0;
+  uint64_t compare_time_us = 0;
+  uint64_t submit_time_us = 0;
+  int64_t last_publish_us = 0;
 };
 
 const char *refreshModeName(RefreshMode mode) {
@@ -282,7 +317,10 @@ private:
 };
 
 RefreshMode getRefreshMode() {
-  const std::string value = getProperty(kRefreshModeProperty, "balanced");
+  std::string value = getProperty(kActiveRefreshModeProperty);
+  if (value.empty()) {
+    value = getProperty(kRefreshModeProperty, "balanced");
+  }
   if (value == "normal") {
     return RefreshMode::kNormal;
   }
@@ -298,6 +336,28 @@ RefreshMode getRefreshMode() {
   return RefreshMode::kBalanced;
 }
 
+IdlePolicy getIdlePolicy() {
+  const std::string value = getProperty(kIdlePolicyProperty, "balanced");
+  if (value == "responsive") {
+    return IdlePolicy::kResponsive;
+  }
+  if (value == "battery") {
+    return IdlePolicy::kBattery;
+  }
+  return IdlePolicy::kBalanced;
+}
+
+CleanupPolicy getCleanupPolicy() {
+  const std::string value = getProperty(kCleanupPolicyProperty, "balanced");
+  if (value == "quality") {
+    return CleanupPolicy::kQuality;
+  }
+  if (value == "manual") {
+    return CleanupPolicy::kManual;
+  }
+  return CleanupPolicy::kBalanced;
+}
+
 useconds_t activeFrameDelay(RefreshMode mode) {
   switch (mode) {
   case RefreshMode::kSpeed:
@@ -310,6 +370,66 @@ useconds_t activeFrameDelay(RefreshMode mode) {
   default:
     return kBalancedFrameDelayUs;
   }
+}
+
+useconds_t idleFrameDelay(IdlePolicy policy, uint32_t idle_poll_count) {
+  if (idle_poll_count < 2) {
+    return kIdleFrameDelayUs;
+  }
+  if (policy == IdlePolicy::kResponsive || idle_poll_count < 4) {
+    return kIdleOneSecondDelayUs;
+  }
+  if (policy == IdlePolicy::kBalanced || idle_poll_count < 6) {
+    return kIdleTwoSecondDelayUs;
+  }
+  return kIdleFiveSecondDelayUs;
+}
+
+int64_t monotonicMicros() {
+  timespec now = {};
+  if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+    return 0;
+  }
+  return static_cast<int64_t>(now.tv_sec) * 1000000 + now.tv_nsec / 1000;
+}
+
+void publishStat(const char *name, uint64_t value, bool *success) {
+  *success &= android::base::SetProperty(name, std::to_string(value));
+}
+
+void publishStats(BridgeStats *stats, bool force = false) {
+  const int64_t now_us = monotonicMicros();
+  if (!force && stats->last_publish_us != 0 &&
+      now_us - stats->last_publish_us < kStatsPublishIntervalUs) {
+    return;
+  }
+
+  bool success = true;
+  publishStat("sys.leaf3.stat.captures", stats->captures, &success);
+  publishStat("sys.leaf3.stat.comparisons", stats->comparisons, &success);
+  publishStat("sys.leaf3.stat.changed", stats->changed_frames, &success);
+  publishStat("sys.leaf3.stat.partial", stats->partial_updates, &success);
+  publishStat("sys.leaf3.stat.full", stats->full_updates, &success);
+  publishStat("sys.leaf3.stat.pixels", stats->updated_pixels, &success);
+  publishStat("sys.leaf3.stat.capture_us", stats->capture_time_us, &success);
+  publishStat("sys.leaf3.stat.compare_us", stats->compare_time_us, &success);
+  publishStat("sys.leaf3.stat.submit_us", stats->submit_time_us, &success);
+  if (!success) {
+    ALOGW("one or more bridge statistics properties could not be published");
+  }
+  ALOGI("stats captures=%llu comparisons=%llu changed=%llu partial=%llu "
+        "full=%llu pixels=%llu capture_us=%llu compare_us=%llu "
+        "submit_us=%llu",
+        static_cast<unsigned long long>(stats->captures),
+        static_cast<unsigned long long>(stats->comparisons),
+        static_cast<unsigned long long>(stats->changed_frames),
+        static_cast<unsigned long long>(stats->partial_updates),
+        static_cast<unsigned long long>(stats->full_updates),
+        static_cast<unsigned long long>(stats->updated_pixels),
+        static_cast<unsigned long long>(stats->capture_time_us),
+        static_cast<unsigned long long>(stats->compare_time_us),
+        static_cast<unsigned long long>(stats->submit_time_us));
+  stats->last_publish_us = now_us;
 }
 
 ChangedRect unionRects(const ChangedRect &left, const ChangedRect &right) {
@@ -596,8 +716,11 @@ int main() {
   bool input_activity = false;
   uint32_t input_probe_frames = 0;
   uint32_t unchanged_frames = 0;
+  uint32_t idle_poll_count = 0;
   uint32_t fast_update_count = 0;
+  uint64_t panel_pixels = 0;
   std::optional<ChangedRect> cleanup_rect;
+  BridgeStats stats;
   RefreshMode refresh_mode = getRefreshMode();
   std::string full_refresh_token = getProperty(kFullRefreshProperty);
   ALOGI("refresh mode: %s", refreshModeName(refresh_mode));
@@ -612,17 +735,25 @@ int main() {
       if (display_was_on) {
         if (initialized && getIntegerProperty(kClearOnSleepProperty, 1) != 0) {
           ALOGI("display is off; clearing retained frame");
-          ebc.clear();
+          const int64_t submit_start_us = monotonicMicros();
+          if (ebc.clear()) {
+            ++stats.full_updates;
+            stats.updated_pixels += panel_pixels;
+            stats.submit_time_us +=
+                static_cast<uint64_t>(monotonicMicros() - submit_start_us);
+          }
         }
         ALOGI("display is off; suspending SurfaceFlinger capture");
         display_was_on = false;
         previous.clear();
         first_refresh = true;
         unchanged_frames = 0;
+        idle_poll_count = 0;
         fast_update_count = 0;
         input_probe_frames = 0;
         cleanup_rect.reset();
       }
+      publishStats(&stats);
       input_activity = input_wake.wait(kIdleFrameDelayUs);
       continue;
     }
@@ -635,6 +766,7 @@ int main() {
 
     Dataspace dataspace;
     sp<GraphicBuffer> buffer;
+    const int64_t capture_start_us = monotonicMicros();
     const status_t capture_status =
         ScreenshotClient::capture(*display_id, &dataspace, &buffer);
     if (capture_status != NO_ERROR || buffer == nullptr) {
@@ -642,6 +774,9 @@ int main() {
       usleep(kRetryDelayUs);
       continue;
     }
+    ++stats.captures;
+    stats.capture_time_us +=
+        static_cast<uint64_t>(monotonicMicros() - capture_start_us);
 
     const uint32_t width = buffer->getWidth();
     const uint32_t height = buffer->getHeight();
@@ -660,6 +795,7 @@ int main() {
         return 1;
       }
       initialized = true;
+      panel_pixels = static_cast<uint64_t>(width) * height;
     }
 
     void *pixels = nullptr;
@@ -676,6 +812,9 @@ int main() {
       refresh_mode = requested_mode;
       cleanup_rect.reset();
       fast_update_count = 0;
+      unchanged_frames = 0;
+      idle_poll_count = 0;
+      input_probe_frames = kInputProbeFrames;
       ALOGI("refresh mode changed to %s", refreshModeName(refresh_mode));
     }
 
@@ -692,11 +831,16 @@ int main() {
     if (first_refresh || force_full_refresh) {
       changed = ChangedRect{0, 0, width, height};
     } else {
+      const int64_t compare_start_us = monotonicMicros();
       changed = findChangedRect(static_cast<const uint8_t *>(pixels), width,
                                 height, stride, previous);
+      ++stats.comparisons;
+      stats.compare_time_us +=
+          static_cast<uint64_t>(monotonicMicros() - compare_start_us);
     }
 
     if (changed) {
+      ++stats.changed_frames;
       uint32_t waveform = kWaveformAuto;
       bool needs_cleanup = false;
       const bool interaction_active = input_activity || input_probe_frames > 0;
@@ -728,13 +872,26 @@ int main() {
         needs_cleanup = false;
       }
 
+      const int64_t submit_start_us = monotonicMicros();
       if (ebc.submit(static_cast<const uint8_t *>(pixels), stride, *changed,
                      waveform, full_refresh)) {
+        stats.submit_time_us +=
+            static_cast<uint64_t>(monotonicMicros() - submit_start_us);
+        if (full_refresh) {
+          ++stats.full_updates;
+          stats.updated_pixels += panel_pixels;
+        } else {
+          ++stats.partial_updates;
+          stats.updated_pixels +=
+              static_cast<uint64_t>(changed->right - changed->left) *
+              (changed->bottom - changed->top);
+        }
         saveFrameRegion(static_cast<const uint8_t *>(pixels), width, height,
                         stride, *changed, &previous);
         first_refresh = false;
         unchanged_frames = 0;
-        if (needs_cleanup) {
+        idle_poll_count = 0;
+        if (needs_cleanup && getCleanupPolicy() != CleanupPolicy::kManual) {
           cleanup_rect = cleanup_rect ? unionRects(*cleanup_rect, *changed)
                                       : std::optional<ChangedRect>(*changed);
           ++fast_update_count;
@@ -745,10 +902,25 @@ int main() {
       }
     } else {
       unchanged_frames = std::min(unchanged_frames + 1, kIdleThresholdFrames);
-      if (cleanup_rect && (unchanged_frames >= kCleanupAfterUnchangedFrames ||
-                           fast_update_count >= kFastCleanupInterval)) {
+      const CleanupPolicy cleanup_policy = getCleanupPolicy();
+      const uint32_t cleanup_after_unchanged =
+          cleanup_policy == CleanupPolicy::kQuality
+              ? kQualityCleanupAfterUnchangedFrames
+              : kCleanupAfterUnchangedFrames;
+      const uint32_t cleanup_interval =
+          cleanup_policy == CleanupPolicy::kQuality
+              ? kQualityFastCleanupInterval
+              : kFastCleanupInterval;
+      if (cleanup_policy != CleanupPolicy::kManual && cleanup_rect &&
+          (unchanged_frames >= cleanup_after_unchanged ||
+           fast_update_count >= cleanup_interval)) {
+        const int64_t submit_start_us = monotonicMicros();
         if (ebc.submit(static_cast<const uint8_t *>(pixels), stride,
                        *cleanup_rect, kWaveformGc16, true)) {
+          stats.submit_time_us +=
+              static_cast<uint64_t>(monotonicMicros() - submit_start_us);
+          ++stats.full_updates;
+          stats.updated_pixels += panel_pixels;
           cleanup_rect.reset();
           fast_update_count = 0;
         }
@@ -757,10 +929,11 @@ int main() {
 
     buffer->unlock();
     const bool probing_for_input_frame = input_probe_frames > 0;
-    const useconds_t delay =
-        unchanged_frames >= kIdleThresholdFrames && !probing_for_input_frame
-            ? kIdleFrameDelayUs
-            : activeFrameDelay(refresh_mode);
+    useconds_t delay = activeFrameDelay(refresh_mode);
+    if (unchanged_frames >= kIdleThresholdFrames && !probing_for_input_frame) {
+      delay = idleFrameDelay(getIdlePolicy(), idle_poll_count);
+      ++idle_poll_count;
+    }
     if (input_probe_frames > 0) {
       --input_probe_frames;
     }
@@ -770,9 +943,11 @@ int main() {
       // touch. Keep capturing at the active cadence long enough to catch it
       // instead of immediately falling back to the 500 ms idle interval.
       input_probe_frames = kInputProbeFrames;
+      idle_poll_count = 0;
       // Let InputDispatcher and SurfaceFlinger publish the frame caused by the
       // event before taking the screenshot.
       usleep(kTouchSettleDelayUs);
     }
+    publishStats(&stats);
   }
 }

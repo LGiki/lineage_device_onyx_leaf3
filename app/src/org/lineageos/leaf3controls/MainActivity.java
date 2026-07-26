@@ -1,6 +1,7 @@
 package org.lineageos.leaf3controls;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.os.Bundle;
 import android.os.SystemClock;
 import android.os.SystemProperties;
@@ -14,8 +15,6 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 public final class MainActivity extends Activity {
-  private static final String REFRESH_MODE = "persist.sys.leaf3.refresh_mode";
-  private static final String FULL_REFRESH = "sys.leaf3.full_refresh";
   private static final String CLEAR_ON_SLEEP =
       "persist.sys.leaf3.clear_on_sleep";
   private static final String FRONTLIGHT_ENABLED =
@@ -31,6 +30,7 @@ public final class MainActivity extends Activity {
   private Switch followAndroidBrightness;
   private TextView brightnessLabel;
   private TextView temperatureLabel;
+  private TextView diagnostics;
 
   @Override
   protected void onCreate(Bundle savedInstanceState) {
@@ -38,6 +38,8 @@ public final class MainActivity extends Activity {
     setContentView(R.layout.activity_main);
 
     final RadioGroup refreshModes = findViewById(R.id.refresh_modes);
+    final RadioGroup idlePolicies = findViewById(R.id.idle_policies);
+    final RadioGroup cleanupPolicies = findViewById(R.id.cleanup_policies);
     final Switch frontlightEnabled = findViewById(R.id.frontlight_enabled);
     final Switch disableAnimations = findViewById(R.id.disable_animations);
     final Switch clearOnSleep = findViewById(R.id.clear_on_sleep);
@@ -46,9 +48,18 @@ public final class MainActivity extends Activity {
     temperature = findViewById(R.id.temperature);
     brightnessLabel = findViewById(R.id.brightness_label);
     temperatureLabel = findViewById(R.id.temperature_label);
+    diagnostics = findViewById(R.id.diagnostics);
 
     selectRefreshMode(refreshModes,
-                      SystemProperties.get(REFRESH_MODE, "balanced"));
+                      SystemProperties.get(
+                          Leaf3Settings.GLOBAL_REFRESH_MODE,
+                          Leaf3Settings.MODE_BALANCED));
+    selectIdlePolicy(idlePolicies,
+                     SystemProperties.get(Leaf3Settings.IDLE_POLICY,
+                                          "balanced"));
+    selectCleanupPolicy(
+        cleanupPolicies,
+        SystemProperties.get(Leaf3Settings.CLEANUP_POLICY, "balanced"));
 
     final int storedBrightnessOverride =
         SystemProperties.getInt(FRONTLIGHT_BRIGHTNESS, -1);
@@ -65,6 +76,7 @@ public final class MainActivity extends Activity {
         clamp(SystemProperties.getInt(FRONTLIGHT_TEMPERATURE, 0)));
     updateBrightnessLabel();
     updateTemperatureLabel();
+    updateDiagnostics();
     loading = false;
 
     refreshModes.setOnCheckedChangeListener(
@@ -72,7 +84,30 @@ public final class MainActivity extends Activity {
           @Override
           public void onCheckedChanged(RadioGroup group, int checkedId) {
             if (!loading) {
-              setProperty(REFRESH_MODE, refreshModeForId(checkedId));
+              setProperty(Leaf3Settings.GLOBAL_REFRESH_MODE,
+                          refreshModeForId(checkedId));
+            }
+          }
+        });
+
+    idlePolicies.setOnCheckedChangeListener(
+        new RadioGroup.OnCheckedChangeListener() {
+          @Override
+          public void onCheckedChanged(RadioGroup group, int checkedId) {
+            if (!loading) {
+              setProperty(Leaf3Settings.IDLE_POLICY,
+                          idlePolicyForId(checkedId));
+            }
+          }
+        });
+
+    cleanupPolicies.setOnCheckedChangeListener(
+        new RadioGroup.OnCheckedChangeListener() {
+          @Override
+          public void onCheckedChanged(RadioGroup group, int checkedId) {
+            if (!loading) {
+              setProperty(Leaf3Settings.CLEANUP_POLICY,
+                          cleanupPolicyForId(checkedId));
             }
           }
         });
@@ -81,10 +116,17 @@ public final class MainActivity extends Activity {
         .setOnClickListener(new View.OnClickListener() {
           @Override
           public void onClick(View view) {
-            setProperty(FULL_REFRESH,
+            setProperty(Leaf3Settings.FULL_REFRESH,
                         Long.toString(SystemClock.elapsedRealtimeNanos()));
           }
         });
+
+    findViewById(R.id.per_app_profiles)
+        .setOnClickListener(view ->
+            startActivity(new Intent(this, ProfileActivity.class)));
+
+    findViewById(R.id.refresh_diagnostics)
+        .setOnClickListener(view -> updateDiagnostics());
 
     frontlightEnabled.setOnCheckedChangeListener(
         new CompoundButton.OnCheckedChangeListener() {
@@ -152,6 +194,14 @@ public final class MainActivity extends Activity {
     });
   }
 
+  @Override
+  protected void onResume() {
+    super.onResume();
+    if (diagnostics != null) {
+      updateDiagnostics();
+    }
+  }
+
   private void updateBrightnessLabel() {
     brightnessLabel.setText(
         getString(R.string.manual_brightness, brightness.getProgress()));
@@ -171,6 +221,7 @@ public final class MainActivity extends Activity {
                     Toast.LENGTH_LONG)
           .show();
     }
+    updateDiagnostics();
   }
 
   private boolean animationsDisabled() {
@@ -224,6 +275,26 @@ public final class MainActivity extends Activity {
     return "balanced";
   }
 
+  private static String idlePolicyForId(int checkedId) {
+    if (checkedId == R.id.idle_responsive) {
+      return "responsive";
+    }
+    if (checkedId == R.id.idle_battery) {
+      return "battery";
+    }
+    return "balanced";
+  }
+
+  private static String cleanupPolicyForId(int checkedId) {
+    if (checkedId == R.id.cleanup_quality) {
+      return "quality";
+    }
+    if (checkedId == R.id.cleanup_manual) {
+      return "manual";
+    }
+    return "balanced";
+  }
+
   private static void selectRefreshMode(RadioGroup group, String mode) {
     if ("normal".equals(mode)) {
       group.check(R.id.mode_normal);
@@ -236,6 +307,70 @@ public final class MainActivity extends Activity {
     } else {
       group.check(R.id.mode_balanced);
     }
+  }
+
+  private static void selectIdlePolicy(RadioGroup group, String policy) {
+    if ("responsive".equals(policy)) {
+      group.check(R.id.idle_responsive);
+    } else if ("battery".equals(policy)) {
+      group.check(R.id.idle_battery);
+    } else {
+      group.check(R.id.idle_balanced);
+    }
+  }
+
+  private static void selectCleanupPolicy(RadioGroup group, String policy) {
+    if ("quality".equals(policy)) {
+      group.check(R.id.cleanup_quality);
+    } else if ("manual".equals(policy)) {
+      group.check(R.id.cleanup_manual);
+    } else {
+      group.check(R.id.cleanup_balanced);
+    }
+  }
+
+  private void updateDiagnostics() {
+    final String globalMode = SystemProperties.get(
+        Leaf3Settings.GLOBAL_REFRESH_MODE, Leaf3Settings.MODE_BALANCED);
+    final String activeMode =
+        SystemProperties.get(Leaf3Settings.ACTIVE_REFRESH_MODE, "");
+    final String effectiveMode =
+        Leaf3Settings.isRefreshMode(activeMode) ? activeMode : globalMode;
+    final String source = SystemProperties.get(
+        Leaf3Settings.ACTIVE_REFRESH_SOURCE, "default");
+    final long captures = getStat("captures");
+    final long comparisons = getStat("comparisons");
+    final long changed = getStat("changed");
+    final long partial = getStat("partial");
+    final long full = getStat("full");
+    final long pixels = getStat("pixels");
+    final long captureTime = getStat("capture_us");
+    final long compareTime = getStat("compare_us");
+    final long submitTime = getStat("submit_us");
+    final long updates = partial + full;
+
+    diagnostics.setText(getString(
+        R.string.diagnostics_value,
+        Leaf3Settings.modeLabel(this, effectiveMode),
+        source,
+        SystemProperties.get(Leaf3Settings.IDLE_POLICY, "balanced"),
+        SystemProperties.get(Leaf3Settings.CLEANUP_POLICY, "balanced"),
+        captures,
+        changed,
+        partial,
+        full,
+        pixels,
+        averageMicros(captureTime, captures),
+        averageMicros(compareTime, comparisons),
+        averageMicros(submitTime, updates)));
+  }
+
+  private static long getStat(String name) {
+    return SystemProperties.getLong("sys.leaf3.stat." + name, 0);
+  }
+
+  private static long averageMicros(long total, long count) {
+    return count == 0 ? 0 : total / count;
   }
 
   private abstract static class SimpleSeekBarListener

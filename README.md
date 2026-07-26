@@ -440,14 +440,14 @@ guessed:
 | `a2` | ANIM/A2 | Fastest interaction, with more ghosting and less grayscale |
 | `regal` | REGAL | Text-oriented partial updates with reduced ghosting |
 
-Fast updates mark the panel as needing cleanup. After four unchanged capture
-cycles (about 320–560 ms depending on mode), or 20 consecutive fast updates,
-the bridge submits one
-full-screen GC16 update. A partial AUTO update proved unable to remove retained
-launcher and Settings frames after a long A2 scroll. The full cleanup flashes
-more visibly, but restores a readable panel after interaction. This mirrors
-the stock ROM's fast-mode plus periodic GC strategy without importing its
-binary-incompatible framework.
+Fast updates mark the panel as needing cleanup. The default Balanced cleanup
+policy submits one full-screen GC16 update after four unchanged capture cycles
+(about 320–560 ms depending on mode), or 20 consecutive fast updates. Quality
+uses thresholds of two frames and ten updates. Manual suppresses automatic
+cleanup while preserving startup, wake, sleep-clear, and explicit full
+refreshes. A partial AUTO update proved unable to remove retained launcher and
+Settings frames after a long A2 scroll. The full cleanup flashes more visibly,
+but restores a readable panel after interaction.
 
 The ONYX ioctl embeds an `mxcfb_rect`, whose binary field order is `top`,
 `left`, `width`, `height`. An earlier bridge revision used `left`, `top`; full
@@ -464,6 +464,11 @@ later than the initial 32 ms touch-settle delay; without this probe burst, a
 missed first capture falls immediately back to the 500 ms idle interval.
 Balanced treats a frame found during the burst as interaction, displays it
 quickly with A2, then performs the usual GC16 cleanup after the page settles.
+After ten unchanged active captures, idle polling progressively backs off.
+Responsive caps the delay at one second, Balanced at two seconds, and Battery
+at five seconds. The input-device poll wakes immediately for touch at every
+stage; only background changes such as clocks or notifications can wait for
+the selected maximum interval.
 
 For partial updates, unchanged rows are rejected with an optimized memory
 comparison. Only the changed bounding rectangle is copied into the persistent
@@ -514,17 +519,37 @@ adb shell leaf3-refresh a2
 adb shell leaf3-refresh regal
 ```
 
-The selection persists across reboots. Request a one-time full GC16 cleanup
+Configure idle capture and ghost cleanup:
+
+```sh
+adb shell leaf3-refresh idle responsive
+adb shell leaf3-refresh idle balanced
+adb shell leaf3-refresh idle battery
+adb shell leaf3-refresh cleanup quality
+adb shell leaf3-refresh cleanup balanced
+adb shell leaf3-refresh cleanup manual
+```
+
+The selections persist across reboots. Request a one-time full GC16 cleanup
 after visible ghosting with:
 
 ```sh
 adb shell leaf3-refresh full
 ```
 
-These are currently global modes. Stock ONYX firmware can select modes per
-application because it modifies SurfaceFlinger, `framework.jar`, and
-`services.jar`. Adding a per-app settings UI is possible later, but copying
-those stock jars into LineageOS is not safe or ABI-compatible.
+The global mode is the fallback for apps without a saved profile. Leaf3
+Controls observes foreground task changes and publishes a non-persistent
+effective mode for configured apps. Precedence is a temporary Quick Settings
+override, then the saved app profile, then the global mode. Neither profiles
+nor temporary overrides overwrite the global persistent property.
+
+Bridge counters are published every 60 seconds and logged as one structured
+`leaf3_epdc_bridge` line. Inspect them through Leaf3 Controls or:
+
+```sh
+adb shell getprop | grep 'sys.leaf3.stat'
+adb logcat -b all -d -s leaf3_epdc_bridge
+```
 
 ### The frontlight does not follow Android brightness
 
@@ -632,7 +657,12 @@ The launcher contains a platform-signed system app named **Leaf3 Controls**.
 It provides:
 
 - Balanced, Normal, Speed, A2, and Regal refresh modes.
+- Per-app refresh profiles with a global fallback.
+- Responsive, Balanced, and Battery idle-capture policies.
+- Quality, Balanced, and Manual ghost-cleanup policies.
 - A one-tap full GC16 screen cleanup.
+- Refresh-mode and clean-screen Quick Settings tiles.
+- Native bridge counters and timing diagnostics.
 - Frontlight on/off.
 - A switch to follow Android's standard brightness slider.
 - A manual frontlight percentage override.
@@ -647,6 +677,13 @@ following until **Follow Android brightness slider** is enabled again.
 Window and transition animations default to off for new users because
 intermediate LCD animation frames waste CPU and create E-Ink ghosting. The app
 switch also controls animator effects and can restore all three Android scales.
+
+Open the Quick Settings editor to add the two Leaf3 tiles. **Refresh mode**
+cycles through all five modes and applies a temporary override to the current
+foreground app; the override clears when the foreground package changes or
+the state service restarts. **Clean screen** requests one full GC16 update.
+Long-pressing either tile opens Leaf3 Controls. The ROM does not modify an
+existing user's tile layout automatically.
 
 The app is installed in `system_ext.img`. After rebuilding, flash the new
 `system.img`, `system_ext.img`, and matching `vbmeta.img`. Confirm installation

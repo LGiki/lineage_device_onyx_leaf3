@@ -1,18 +1,46 @@
 #!/system/bin/sh
 
 mode_property=persist.sys.leaf3.refresh_mode
+active_mode_property=sys.leaf3.active_refresh_mode
+active_source_property=sys.leaf3.active_refresh_source
 refresh_property=sys.leaf3.full_refresh
 clear_on_sleep_property=persist.sys.leaf3.clear_on_sleep
+idle_policy_property=persist.sys.leaf3.idle_policy
+cleanup_policy_property=persist.sys.leaf3.cleanup_policy
 
 usage() {
     echo "usage: leaf3-refresh {balanced|normal|speed|a2|regal|full|clear-on-sleep|retain-on-sleep|animations-off|animations-on|status}" >&2
+    echo "       leaf3-refresh idle {responsive|balanced|battery}" >&2
+    echo "       leaf3-refresh cleanup {quality|balanced|manual}" >&2
     exit 2
 }
 
 case "${1:-status}" in
     balanced|normal|speed|a2|regal)
         setprop "$mode_property" "$1"
-        echo "Leaf3 refresh mode: $1"
+        echo "Leaf3 global refresh mode: $1"
+        ;;
+    idle)
+        case "${2:-}" in
+            responsive|balanced|battery)
+                setprop "$idle_policy_property" "$2"
+                echo "Leaf3 idle capture policy: $2"
+                ;;
+            *)
+                usage
+                ;;
+        esac
+        ;;
+    cleanup)
+        case "${2:-}" in
+            quality|balanced|manual)
+                setprop "$cleanup_policy_property" "$2"
+                echo "Leaf3 ghost-cleanup policy: $2"
+                ;;
+            *)
+                usage
+                ;;
+        esac
         ;;
     full)
         # Toggle the token so even consecutive requests are distinguishable.
@@ -43,8 +71,34 @@ case "${1:-status}" in
         ;;
     status)
         mode="$(getprop "$mode_property")"
+        active_mode="$(getprop "$active_mode_property")"
+        active_source="$(getprop "$active_source_property")"
         clear_on_sleep="$(getprop "$clear_on_sleep_property")"
-        echo "Leaf3 refresh mode: ${mode:-balanced}"
+        idle_policy="$(getprop "$idle_policy_property")"
+        cleanup_policy="$(getprop "$cleanup_policy_property")"
+        case "$mode" in
+            balanced|normal|speed|a2|regal) ;;
+            *) mode=balanced ;;
+        esac
+        case "$active_mode" in
+            balanced|normal|speed|a2|regal) ;;
+            *) active_mode= ;;
+        esac
+        case "$idle_policy" in
+            responsive|balanced|battery) ;;
+            *) idle_policy=balanced ;;
+        esac
+        case "$cleanup_policy" in
+            quality|balanced|manual) ;;
+            *) cleanup_policy=balanced ;;
+        esac
+        effective_mode="${active_mode:-${mode:-balanced}}"
+        echo "Leaf3 global refresh mode: $mode"
+        echo "Active refresh override: ${active_mode:-none}"
+        echo "Active refresh source: ${active_source:-default}"
+        echo "Effective refresh mode: $effective_mode"
+        echo "Idle capture policy: $idle_policy"
+        echo "Ghost-cleanup policy: $cleanup_policy"
         echo "Clear retained frame on sleep: ${clear_on_sleep:-1}"
         ;;
     *)
