@@ -172,7 +172,7 @@ constexpr uint32_t kSignificantBinPercent = 2;
 constexpr uint32_t kClassifySamplesPerAxis = 64;
 
 constexpr uint32_t kScrollProbeRows = 16;
-constexpr uint32_t kScrollMinVotes = 6;
+constexpr uint32_t kScrollMinVotes = 4;
 constexpr int32_t kScrollMinShift = 8;
 
 struct EbcBufferInfo {
@@ -1757,6 +1757,7 @@ int main() {
   bool display_was_on = settings.interactive;
   bool pending_full_refresh = false;
   bool cleanup_pending = false;
+  bool cleanup_damage_valid = false;
   bool scroll_in_progress = false;
   bool source_prefers_stream = settings.prefer_stream;
   uint32_t unchanged_frames = 0;
@@ -1767,6 +1768,7 @@ int main() {
   uint32_t panel_height = 0;
   uint64_t panel_pixels = 0;
   int64_t cleanup_deadline_us = 0;
+  ChangedRect cleanup_damage = {};
   std::string full_refresh_token = settings.full_refresh_token;
   RefreshMode active_mode = settings.mode;
   ALOGI("refresh mode: %s", refreshModeName(active_mode));
@@ -1774,6 +1776,12 @@ int main() {
   for (;;) {
     settings = settings_cache.read();
     frontlight.update(settings, settings.interactive);
+
+    if (cleanup_pending && settings.cleanup == CleanupPolicy::kManual) {
+      cleanup_pending = false;
+      cleanup_damage_valid = false;
+      cleanup_deadline_us = 0;
+    }
 
     if (settings.full_refresh_token != full_refresh_token) {
       full_refresh_token = settings.full_refresh_token;
@@ -1803,6 +1811,7 @@ int main() {
         previous.clear();
         scroll.reset();
         cleanup_pending = false;
+        cleanup_damage_valid = false;
         scroll_in_progress = false;
         cleanup_deadline_us = 0;
         unchanged_frames = 0;
@@ -1837,6 +1846,7 @@ int main() {
       previous.clear();
       scroll.reset();
       cleanup_pending = false;
+      cleanup_damage_valid = false;
       scroll_in_progress = false;
       cleanup_deadline_us = 0;
     }
@@ -1844,6 +1854,7 @@ int main() {
     if (settings.mode != active_mode) {
       active_mode = settings.mode;
       cleanup_pending = false;
+      cleanup_damage_valid = false;
       cleanup_deadline_us = 0;
       unchanged_frames = 0;
       idle_poll_count = 0;
@@ -1864,6 +1875,7 @@ int main() {
       ++stats.full_updates;
       stats.updated_pixels += panel_pixels;
       cleanup_pending = false;
+      cleanup_damage_valid = false;
       scroll_in_progress = false;
       cleanup_deadline_us = 0;
     }
@@ -1933,7 +1945,11 @@ int main() {
       if (changed && !full_refresh && settings.scroll_detect &&
           now_us - touch_us < kScrollTouchWindowUs) {
         const ChangedRect box = damage.bounds();
-        if ((box.bottom - box.top) * 2 > frame.height) {
+        // App content rarely occupies the status and navigation bars. Requiring
+        // half of the physical panel excluded otherwise valid Settings and
+        // browser viewports, so use one third while retaining the row-shift
+        // vote check that rejects ordinary taps.
+        if (static_cast<uint64_t>(box.bottom - box.top) * 3 > frame.height) {
           scrolling = scroll.detect(frame.pixels, frame.stride, previous, box)
                           .has_value();
           if (scrolling) {
@@ -1978,7 +1994,11 @@ int main() {
               settings.content_aware
                   ? classifyRegion(frame.pixels, frame.stride, rect)
                   : ContentClass::kGrayscale;
-          const bool bilevel = content == ContentClass::kBiLevel;
+          // Do not apply DU to a large bounding rectangle made from sparse,
+          // distant tiles. It would unnecessarily disturb unchanged grayscale
+          // content between those tiles.
+          const bool bilevel =
+              content == ContentClass::kBiLevel && !sparse_damage;
 
           uint32_t waveform = kWaveformAuto;
           bool fast = false;
@@ -2005,12 +2025,23 @@ int main() {
               waveform = kWaveformDu;
               fast = true;
             } else if (settings.content_aware) {
-              waveform = kWaveformGc16;
+              // AUTO is the proven-safe grayscale path. Explicit GC16 here
+              // made mixed or sparse damage drive large quality passes and,
+              // followed by cleanup, could overload the vendor EBC stack.
+              waveform = kWaveformAuto;
             } else if (input_probe_frames > 0) {
               waveform = kWaveformAnim;
               fast = true;
             }
             break;
+          }
+
+          // Scroll detection is an explicit global behavior, not a Balanced
+          // mode detail. Apply it after the per-app mode decision so Normal
+          // and Regal profiles also become responsive while moving.
+          if (scrolling) {
+            waveform = kWaveformAnim;
+            fast = true;
           }
 
           if (full_refresh) {
@@ -2037,6 +2068,12 @@ int main() {
               static_cast<uint64_t>(monotonicMicros() - submit_start_us);
           submitted_any = true;
           needs_cleanup |= fast;
+          if (fast && !full_refresh) {
+            cleanup_damage = cleanup_damage_valid
+                                 ? unionRects(cleanup_damage, update_rect)
+                                 : update_rect;
+            cleanup_damage_valid = true;
+          }
 
           if (full_refresh) {
             ++stats.full_updates;
@@ -2067,10 +2104,12 @@ int main() {
           idle_poll_count = 0;
           if (full_refresh) {
             cleanup_pending = false;
+            cleanup_damage_valid = false;
             scroll_in_progress = false;
             cleanup_deadline_us = 0;
           } else if (settings.cleanup == CleanupPolicy::kManual) {
             cleanup_pending = false;
+            cleanup_damage_valid = false;
             scroll_in_progress = false;
             cleanup_deadline_us = 0;
           } else {
@@ -2094,21 +2133,26 @@ int main() {
       source->release();
     }
 
-    // A fast waveform leaves the panel dirty. Clean it once the compositor has
-    // been quiet long enough that the cleanup flash will not be wasted.
+    // A fast waveform leaves the affected region dirty. Clean only the union
+    // of those regions once the compositor is quiet; repeatedly applying
+    // full-screen GC16 for small content-aware text updates is both wasteful
+    // and too much load for this vendor EBC path.
     if (cleanup_pending && settings.cleanup != CleanupPolicy::kManual &&
-        initialized) {
+        initialized && cleanup_damage_valid) {
       const bool quiet = monotonicMicros() >= cleanup_deadline_us;
       if (quiet) {
         const int64_t submit_start_us = monotonicMicros();
-        if (!ebc.refreshFull(kWaveformGc16)) {
+        if (!ebc.sendStagedUpdate(cleanup_damage, kWaveformGc16,
+                                  /*dither=*/true,
+                                  /*full_refresh=*/false)) {
           return 1;
         }
         stats.submit_time_us +=
             static_cast<uint64_t>(monotonicMicros() - submit_start_us);
-        ++stats.full_updates;
-        stats.updated_pixels += panel_pixels;
+        ++stats.partial_updates;
+        stats.updated_pixels += cleanup_damage.area();
         cleanup_pending = false;
+        cleanup_damage_valid = false;
         scroll_in_progress = false;
         cleanup_deadline_us = 0;
       }

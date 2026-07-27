@@ -451,20 +451,23 @@ guessed:
 
 Balanced classifies each changed region from a sampled luminance histogram.
 Effectively bi-level text and flat UI use undithered DU; multi-level content
-uses dithered GC16. Explicit Normal, Speed, A2, and Regal modes retain their
-requested waveform, while dithering is still disabled for classified
-bi-level regions. Automatic classification is opt-in with
+uses the proven-safe dithered AUTO path. Sparse tiles with a much larger
+bounding rectangle also use AUTO so distant changes cannot apply DU across
+unchanged grayscale content. Explicit Normal, Speed, A2, and Regal modes
+retain their requested waveform, while dithering is still disabled for
+classified bi-level regions. Automatic classification is opt-in with
 `leaf3-refresh content-aware on`; the production default retains the
 known-good dithered waveform behavior.
 
-Fast updates mark the panel as needing cleanup. Balanced submits one
-full-screen GC16 update after the compositor has been quiet for 600 ms;
+Fast updates mark their affected region as needing cleanup. Balanced submits
+one regional GC16 update after the compositor has been quiet for 600 ms;
 Quality uses 300 ms. Every changed frame extends that deadline, so continuous
 movement never inserts a cleanup flash between scroll frames. Manual
 suppresses automatic cleanup while preserving startup, wake, sleep-clear, and
 explicit full refreshes. Row hashes recognize a constant vertical offset
-during touch-driven scrolling; scrolling uses A2 and defers the cleanup until
-movement stops. Row-hash scroll detection is also opt-in with
+during touch-driven scrolling; scrolling uses A2 regardless of the current
+per-app waveform profile and defers the regional cleanup until movement
+stops. Row-hash scroll detection is also opt-in with
 `leaf3-refresh scroll-detect on`.
 
 The ONYX ioctl embeds an `mxcfb_rect`, whose binary field order is `top`,
