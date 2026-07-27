@@ -1957,6 +1957,7 @@ int main() {
   uint32_t panel_height = 0;
   uint64_t panel_pixels = 0;
   int64_t cleanup_deadline_us = 0;
+  int64_t last_scroll_activity_us = 0;
   ChangedRect cleanup_damage = {};
   std::string full_refresh_token = settings.full_refresh_token;
   RefreshMode active_mode = settings.mode;
@@ -2131,6 +2132,8 @@ int main() {
       const int64_t touch_us = last_touch_us.load(std::memory_order_relaxed);
       const int64_t scroll_motion_us =
           last_scroll_motion_us.load(std::memory_order_relaxed);
+      last_scroll_activity_us =
+          std::max(last_scroll_activity_us, scroll_motion_us);
       const bool active_drag =
           dragging_contact_active.load(std::memory_order_relaxed);
       const bool recent_scroll_motion =
@@ -2141,8 +2144,8 @@ int main() {
       // post-release continuation used for fling startup.
       const bool gesture_scrolling = active_drag || recent_scroll_motion;
       const bool established_fling_live =
-          scroll_in_progress && touch_us != 0 &&
-          now_us - touch_us < kScrollFlingWindowUs;
+          scroll_in_progress && last_scroll_activity_us != 0 &&
+          now_us - last_scroll_activity_us < kScrollFlingWindowUs;
 
       bool scrolling = false;
       if (changed && !full_refresh && settings.scroll_detect) {
@@ -2152,14 +2155,20 @@ int main() {
         // browser viewports, so use one third while retaining the row-shift
         // vote check that rejects ordinary taps.
         if (static_cast<uint64_t>(box.bottom - box.top) * 3 > frame.height) {
+          // Generic touch opens only the initial hash-detection window. Once
+          // scrolling is established, only past-slop motion or another
+          // positive row-hash match may extend the fling window.
+          const bool initial_hash_window =
+              touch_us != 0 && now_us - touch_us < kScrollGestureWindowUs;
           const bool allow_hash =
-              touch_us != 0 &&
-              now_us - touch_us < (scroll_in_progress ? kScrollFlingWindowUs
-                                                      : kScrollGestureWindowUs);
+              scroll_in_progress ? established_fling_live : initial_hash_window;
           const bool hash_scrolling =
               !gesture_scrolling && allow_hash &&
               scroll.detect(frame.pixels, frame.stride, previous, box)
                   .has_value();
+          if (hash_scrolling) {
+            last_scroll_activity_us = now_us;
+          }
           scrolling = gesture_scrolling || hash_scrolling;
           if (gesture_scrolling) {
             ++stats.gesture_scroll_frames;
