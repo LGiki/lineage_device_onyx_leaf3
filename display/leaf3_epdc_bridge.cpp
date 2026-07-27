@@ -32,6 +32,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -137,8 +138,11 @@ constexpr int64_t kQualityCleanupDelayUs = 300000;
 
 constexpr int64_t kStatsPublishIntervalUs = 60000000;
 constexpr int64_t kStreamStartupTimeoutUs = 3000000;
-// Scrolls are touch driven; skip the row hashing entirely when they cannot be.
-constexpr int64_t kScrollTouchWindowUs = 500000;
+// ONYX changes waveform as soon as a drag crosses Android's touch slop. Keep
+// the raw-input gesture active briefly after the last movement so a released
+// fling stays fast, and allow row hashes to extend an established fling.
+constexpr int64_t kScrollGestureWindowUs = 500000;
+constexpr int64_t kScrollFlingWindowUs = 1500000;
 
 constexpr char kRefreshModeProperty[] = "persist.sys.leaf3.refresh_mode";
 constexpr char kActiveRefreshModeProperty[] = "sys.leaf3.active_refresh_mode";
@@ -235,7 +239,7 @@ struct Settings {
   IdlePolicy idle = IdlePolicy::kBalanced;
   CleanupPolicy cleanup = CleanupPolicy::kBalanced;
   bool content_aware = false;
-  bool scroll_detect = false;
+  bool scroll_detect = true;
   bool clear_on_sleep = true;
   bool interactive = true;
   bool prefer_stream = false;
@@ -257,6 +261,8 @@ struct BridgeStats {
   uint64_t split_frames = 0;
   uint64_t bilevel_updates = 0;
   uint64_t scroll_frames = 0;
+  uint64_t gesture_scroll_frames = 0;
+  uint64_t hash_scroll_frames = 0;
   uint64_t capture_time_us = 0;
   uint64_t compare_time_us = 0;
   uint64_t submit_time_us = 0;
@@ -442,8 +448,12 @@ public:
       settings_.cleanup = CleanupPolicy::kBalanced;
     }
 
-    settings_.content_aware = parseInteger(content_aware, 0) != 0;
-    settings_.scroll_detect = parseInteger(scroll_detect, 0) != 0;
+    // Content-aware GC16 caused repeated large update passes on the preserved
+    // vendor EBC stack. Keep the implementation for later composer-native
+    // work, but quarantine it in the production bridge.
+    (void)content_aware;
+    settings_.content_aware = false;
+    settings_.scroll_detect = parseInteger(scroll_detect, 1) != 0;
     settings_.clear_on_sleep = parseInteger(clear_on_sleep, 1) != 0;
     settings_.interactive = parseInteger(interactive, 1) != 0;
     // The Qualcomm/ONYX display stack becomes unstable when its virtual
@@ -614,6 +624,12 @@ public:
       close(fd_);
       fd_ = -1;
     }
+    slots_.clear();
+    current_slot_ = 0;
+    slot_minimum_ = 0;
+    x_range_ = 0;
+    y_range_ = 0;
+    gesture_supported_ = false;
   }
 
   bool init() {
@@ -646,7 +662,9 @@ public:
       if (ioctl(candidate, EVIOCGNAME(sizeof(name)), name) >= 0 &&
           strcmp(name, kTouchInputName) == 0) {
         fd_ = candidate;
-        ALOGI("touch wake-up enabled on %s (%s)", path, name);
+        initGestureTracking();
+        ALOGI("touch wake-up enabled on %s (%s), gesture tracking %s", path,
+              name, gesture_supported_ ? "enabled" : "unavailable");
         break;
       }
       close(candidate);
@@ -656,10 +674,9 @@ public:
     return fd_ >= 0;
   }
 
-  bool valid() const { return fd_ >= 0; }
-
   // A negative timeout blocks until touch activity arrives.
-  bool wait(int64_t timeout_us) {
+  bool wait(int64_t timeout_us, bool *scroll_motion) {
+    *scroll_motion = false;
     if (fd_ < 0) {
       if (timeout_us > 0) {
         usleep(static_cast<useconds_t>(timeout_us));
@@ -676,13 +693,153 @@ public:
     }
 
     input_event events[64];
-    while (read(fd_, events, sizeof(events)) > 0) {
+    for (;;) {
+      const ssize_t bytes = read(fd_, events, sizeof(events));
+      if (bytes <= 0) {
+        break;
+      }
+      const size_t count = static_cast<size_t>(bytes) / sizeof(input_event);
+      for (size_t i = 0; i < count; ++i) {
+        *scroll_motion |= processEvent(events[i]);
+      }
     }
     return true;
   }
 
 private:
+  struct Contact {
+    bool active = false;
+    bool have_x = false;
+    bool have_y = false;
+    bool have_origin = false;
+    bool dragging = false;
+    int32_t x = 0;
+    int32_t y = 0;
+    int32_t origin_x = 0;
+    int32_t origin_y = 0;
+    int32_t reported_x = 0;
+    int32_t reported_y = 0;
+  };
+
+  void initGestureTracking() {
+    input_absinfo slot_info = {};
+    input_absinfo x_info = {};
+    input_absinfo y_info = {};
+    if (ioctl(fd_, EVIOCGABS(ABS_MT_POSITION_X), &x_info) < 0 ||
+        ioctl(fd_, EVIOCGABS(ABS_MT_POSITION_Y), &y_info) < 0) {
+      return;
+    }
+
+    size_t slot_count = 1;
+    if (ioctl(fd_, EVIOCGABS(ABS_MT_SLOT), &slot_info) == 0) {
+      const int64_t reported_slots =
+          static_cast<int64_t>(slot_info.maximum) - slot_info.minimum + 1;
+      if (reported_slots <= 0 || reported_slots > kMaximumTouchSlots) {
+        return;
+      }
+      slot_count = static_cast<size_t>(reported_slots);
+      slot_minimum_ = slot_info.minimum;
+      current_slot_ = std::clamp(slot_info.value - slot_info.minimum, 0,
+                                 static_cast<int32_t>(slot_count - 1));
+    }
+
+    x_range_ = static_cast<int64_t>(x_info.maximum) - x_info.minimum;
+    y_range_ = static_cast<int64_t>(y_info.maximum) - y_info.minimum;
+    if (x_range_ <= 0 || y_range_ <= 0) {
+      return;
+    }
+    slots_.resize(slot_count);
+    gesture_supported_ = true;
+    ALOGI("touch gesture axes x_range=%lld y_range=%lld slots=%zu",
+          static_cast<long long>(x_range_), static_cast<long long>(y_range_),
+          slot_count);
+  }
+
+  bool processEvent(const input_event &event) {
+    if (!gesture_supported_) {
+      return false;
+    }
+    if (event.type == EV_ABS) {
+      if (event.code == ABS_MT_SLOT) {
+        const int32_t slot = event.value - slot_minimum_;
+        if (slot >= 0 && static_cast<size_t>(slot) < slots_.size()) {
+          current_slot_ = slot;
+        } else {
+          current_slot_ = -1;
+        }
+        return false;
+      }
+
+      if (current_slot_ < 0 ||
+          static_cast<size_t>(current_slot_) >= slots_.size()) {
+        return false;
+      }
+      Contact &contact = slots_[current_slot_];
+      switch (event.code) {
+      case ABS_MT_TRACKING_ID:
+        if (event.value < 0) {
+          contact = {};
+        } else {
+          contact = {};
+          contact.active = true;
+        }
+        break;
+      case ABS_MT_POSITION_X:
+        contact.x = event.value;
+        contact.have_x = true;
+        break;
+      case ABS_MT_POSITION_Y:
+        contact.y = event.value;
+        contact.have_y = true;
+        break;
+      default:
+        break;
+      }
+      return false;
+    }
+    if (event.type != EV_SYN || event.code != SYN_REPORT) {
+      return false;
+    }
+
+    bool scroll_motion = false;
+    for (Contact &contact : slots_) {
+      if (!contact.active || !contact.have_x || !contact.have_y) {
+        continue;
+      }
+      if (!contact.have_origin) {
+        contact.origin_x = contact.x;
+        contact.origin_y = contact.y;
+        contact.reported_x = contact.x;
+        contact.reported_y = contact.y;
+        contact.have_origin = true;
+        continue;
+      }
+
+      const int64_t delta_x =
+          std::abs(static_cast<int64_t>(contact.x) - contact.origin_x);
+      const int64_t delta_y =
+          std::abs(static_cast<int64_t>(contact.y) - contact.origin_y);
+      contact.dragging |=
+          delta_x * 100 >= x_range_ || delta_y * 100 >= y_range_;
+      if (contact.dragging && (contact.x != contact.reported_x ||
+                               contact.y != contact.reported_y)) {
+        scroll_motion = true;
+      }
+      contact.reported_x = contact.x;
+      contact.reported_y = contact.y;
+    }
+    return scroll_motion;
+  }
+
+  static constexpr int64_t kMaximumTouchSlots = 32;
+
   int fd_ = -1;
+  std::vector<Contact> slots_;
+  int32_t current_slot_ = 0;
+  int32_t slot_minimum_ = 0;
+  int64_t x_range_ = 0;
+  int64_t y_range_ = 0;
+  bool gesture_supported_ = false;
 };
 
 struct Frame {
@@ -1597,6 +1754,10 @@ void publishStats(BridgeStats *stats, bool force = false) {
   publishStat("sys.leaf3.stat.split", stats->split_frames, &success);
   publishStat("sys.leaf3.stat.bilevel", stats->bilevel_updates, &success);
   publishStat("sys.leaf3.stat.scroll", stats->scroll_frames, &success);
+  publishStat("sys.leaf3.stat.scroll_gesture", stats->gesture_scroll_frames,
+              &success);
+  publishStat("sys.leaf3.stat.scroll_hash", stats->hash_scroll_frames,
+              &success);
   publishStat("sys.leaf3.stat.capture_us", stats->capture_time_us, &success);
   publishStat("sys.leaf3.stat.compare_us", stats->compare_time_us, &success);
   publishStat("sys.leaf3.stat.submit_us", stats->submit_time_us, &success);
@@ -1605,7 +1766,8 @@ void publishStats(BridgeStats *stats, bool force = false) {
   }
   ALOGI("stats captures=%llu comparisons=%llu changed=%llu partial=%llu "
         "full=%llu pixels=%llu dropped=%llu split=%llu bilevel=%llu "
-        "scroll=%llu capture_us=%llu compare_us=%llu submit_us=%llu",
+        "scroll=%llu gesture_scroll=%llu hash_scroll=%llu capture_us=%llu "
+        "compare_us=%llu submit_us=%llu",
         static_cast<unsigned long long>(stats->captures),
         static_cast<unsigned long long>(stats->comparisons),
         static_cast<unsigned long long>(stats->changed_frames),
@@ -1616,6 +1778,8 @@ void publishStats(BridgeStats *stats, bool force = false) {
         static_cast<unsigned long long>(stats->split_frames),
         static_cast<unsigned long long>(stats->bilevel_updates),
         static_cast<unsigned long long>(stats->scroll_frames),
+        static_cast<unsigned long long>(stats->gesture_scroll_frames),
+        static_cast<unsigned long long>(stats->hash_scroll_frames),
         static_cast<unsigned long long>(stats->capture_time_us),
         static_cast<unsigned long long>(stats->compare_time_us),
         static_cast<unsigned long long>(stats->submit_time_us));
@@ -1654,7 +1818,8 @@ int64_t cleanupDelay(CleanupPolicy policy) {
                                            : kBalancedCleanupDelayUs;
 }
 
-void inputThread(Waiter *waiter, std::atomic<int64_t> *last_touch_us) {
+void inputThread(Waiter *waiter, std::atomic<int64_t> *last_touch_us,
+                 std::atomic<int64_t> *last_scroll_motion_us) {
   InputWakeMonitor monitor;
   if (!monitor.init()) {
     ALOGW("touch input %s was not found; scroll detection and touch-assisted "
@@ -1663,8 +1828,13 @@ void inputThread(Waiter *waiter, std::atomic<int64_t> *last_touch_us) {
     return;
   }
   for (;;) {
-    if (monitor.wait(-1)) {
-      last_touch_us->store(monotonicMicros(), std::memory_order_relaxed);
+    bool scroll_motion = false;
+    if (monitor.wait(-1, &scroll_motion)) {
+      const int64_t now_us = monotonicMicros();
+      last_touch_us->store(now_us, std::memory_order_relaxed);
+      if (scroll_motion) {
+        last_scroll_motion_us->store(now_us, std::memory_order_relaxed);
+      }
       waiter->signal(Waiter::kInput);
     }
   }
@@ -1735,7 +1905,9 @@ int main() {
 
   Waiter waiter;
   std::atomic<int64_t> last_touch_us{0};
-  std::thread(inputThread, &waiter, &last_touch_us).detach();
+  std::atomic<int64_t> last_scroll_motion_us{0};
+  std::thread(inputThread, &waiter, &last_touch_us, &last_scroll_motion_us)
+      .detach();
   std::thread(propertyThread, &waiter).detach();
 
   EbcDevice ebc;
@@ -1940,18 +2112,34 @@ int main() {
 
       const int64_t now_us = monotonicMicros();
       const int64_t touch_us = last_touch_us.load(std::memory_order_relaxed);
+      const int64_t scroll_motion_us =
+          last_scroll_motion_us.load(std::memory_order_relaxed);
 
       bool scrolling = false;
-      if (changed && !full_refresh && settings.scroll_detect &&
-          now_us - touch_us < kScrollTouchWindowUs) {
+      if (changed && !full_refresh && settings.scroll_detect) {
         const ChangedRect box = damage.bounds();
         // App content rarely occupies the status and navigation bars. Requiring
         // half of the physical panel excluded otherwise valid Settings and
         // browser viewports, so use one third while retaining the row-shift
         // vote check that rejects ordinary taps.
         if (static_cast<uint64_t>(box.bottom - box.top) * 3 > frame.height) {
-          scrolling = scroll.detect(frame.pixels, frame.stride, previous, box)
-                          .has_value();
+          const bool gesture_scrolling =
+              scroll_motion_us != 0 &&
+              now_us - scroll_motion_us < kScrollGestureWindowUs;
+          const bool allow_hash =
+              touch_us != 0 &&
+              now_us - touch_us < (scroll_in_progress ? kScrollFlingWindowUs
+                                                      : kScrollGestureWindowUs);
+          const bool hash_scrolling =
+              !gesture_scrolling && allow_hash &&
+              scroll.detect(frame.pixels, frame.stride, previous, box)
+                  .has_value();
+          scrolling = gesture_scrolling || hash_scrolling;
+          if (gesture_scrolling) {
+            ++stats.gesture_scroll_frames;
+          } else if (hash_scrolling) {
+            ++stats.hash_scroll_frames;
+          }
           if (scrolling) {
             ++stats.scroll_frames;
           }

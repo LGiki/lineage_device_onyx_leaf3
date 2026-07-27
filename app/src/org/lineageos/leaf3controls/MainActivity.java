@@ -73,10 +73,10 @@ public final class MainActivity extends Activity {
     disableAnimations.setChecked(animationsDisabled());
     clearOnSleep.setChecked(SystemProperties.getInt(CLEAR_ON_SLEEP, 1) != 0);
     grayscale.setChecked(Leaf3Settings.isGrayscaleEnabled());
-    contentAware.setChecked(
-        SystemProperties.getInt(Leaf3Settings.CONTENT_AWARE, 0) != 0);
+    contentAware.setChecked(false);
+    contentAware.setEnabled(false);
     scrollDetection.setChecked(
-        SystemProperties.getInt(Leaf3Settings.SCROLL_DETECT, 0) != 0);
+        SystemProperties.getInt(Leaf3Settings.SCROLL_DETECT, 1) != 0);
     followAndroidBrightness.setChecked(brightnessOverride < 0);
     brightness.setProgress(brightnessOverride < 0 ? 50 : brightnessOverride);
     brightness.setEnabled(brightnessOverride >= 0);
@@ -173,16 +173,6 @@ public final class MainActivity extends Activity {
             if (!loading) {
               setProperty(Leaf3Settings.GRAYSCALE, checked ? "1" : "0");
               Leaf3Settings.applyGrayscale(MainActivity.this, checked);
-            }
-          }
-        });
-
-    contentAware.setOnCheckedChangeListener(
-        new CompoundButton.OnCheckedChangeListener() {
-          @Override
-          public void onCheckedChanged(CompoundButton button, boolean checked) {
-            if (!loading) {
-              setProperty(Leaf3Settings.CONTENT_AWARE, checked ? "1" : "0");
             }
           }
         });
@@ -389,6 +379,8 @@ public final class MainActivity extends Activity {
     final long split = getStat("split");
     final long bilevel = getStat("bilevel");
     final long scroll = getStat("scroll");
+    final long gestureScroll = getStat("scroll_gesture");
+    final long hashScroll = getStat("scroll_hash");
     final long captureTime = getStat("capture_us");
     final long compareTime = getStat("compare_us");
     final long submitTime = getStat("submit_us");
@@ -405,6 +397,8 @@ public final class MainActivity extends Activity {
         changed,
         dropped,
         scroll,
+        gestureScroll,
+        hashScroll,
         partial,
         full,
         split,

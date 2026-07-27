@@ -16,7 +16,7 @@ usage() {
     echo "usage: leaf3-refresh {balanced|normal|speed|a2|regal|full|clear-on-sleep|retain-on-sleep|animations-off|animations-on|status}" >&2
     echo "       leaf3-refresh idle {responsive|balanced|battery}" >&2
     echo "       leaf3-refresh cleanup {quality|balanced|manual}" >&2
-    echo "       leaf3-refresh content-aware {on|off}" >&2
+    echo "       leaf3-refresh content-aware off" >&2
     echo "       leaf3-refresh scroll-detect {on|off}" >&2
     echo "       leaf3-refresh capture poll" >&2
     exit 2
@@ -51,10 +51,13 @@ case "${1:-status}" in
         ;;
     content-aware)
         case "${2:-}" in
-            on|off)
-                [ "$2" = on ] && value=1 || value=0
-                setprop "$content_aware_property" "$value"
-                echo "Leaf3 content-aware waveform selection: $2"
+            off)
+                setprop "$content_aware_property" 0
+                echo "Leaf3 content-aware waveform selection: off"
+                ;;
+            on)
+                echo "content-aware mode is quarantined because it overloads the vendor EBC path" >&2
+                exit 1
                 ;;
             *)
                 usage
@@ -143,8 +146,8 @@ case "${1:-status}" in
             *) cleanup_policy=balanced ;;
         esac
         effective_mode="${active_mode:-${mode:-balanced}}"
-        [ "$content_aware" = 1 ] || content_aware=0
-        [ "$scroll_detect" = 1 ] || scroll_detect=0
+        content_aware=0
+        [ "$scroll_detect" = 0 ] || scroll_detect=1
         capture_mode=poll
         echo "Leaf3 global refresh mode: $mode"
         echo "Active refresh override: ${active_mode:-none}"

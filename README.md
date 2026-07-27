@@ -441,34 +441,34 @@ The bridge exposes the stock ONYX waveform strategies globally. The values
 were recovered from the stock `ViewUpdateHelper` implementation rather than
 guessed:
 
-| Mode | Stock waveform | Intended use |
+| Mode | Bridge waveform | Intended use |
 | --- | --- | --- |
-| `balanced` | Content-selected DU/GC16, A2 while scrolling | Default; crisp flat UI and full grayscale for images |
+| `balanced` | AUTO, A2 while scrolling | Default; safe quality updates with responsive scrolling |
 | `normal` | AUTO | Highest general UI quality |
 | `speed` | DU | Faster monochrome page and list changes |
 | `a2` | ANIM/A2 | Fastest interaction, with more ghosting and less grayscale |
 | `regal` | REGAL | Text-oriented partial updates with reduced ghosting |
 
-Balanced classifies each changed region from a sampled luminance histogram.
-Effectively bi-level text and flat UI use undithered DU; multi-level content
-uses the proven-safe dithered AUTO path. Sparse tiles with a much larger
-bounding rectangle also use AUTO so distant changes cannot apply DU across
-unchanged grayscale content. Explicit Normal, Speed, A2, and Regal modes
-retain their requested waveform, while dithering is still disabled for
-classified bi-level regions. Automatic classification is opt-in with
-`leaf3-refresh content-aware on`; the production default retains the
-known-good dithered waveform behavior.
+The bridge retains its sampled-luminance classifier for future
+composer-native work, but content-aware waveform selection is quarantined.
+On the direct EBC path it caused large quality passes that could overload the
+preserved vendor stack. Balanced therefore uses the proven-safe dithered AUTO
+path outside scrolling; `leaf3-refresh content-aware on` is rejected.
+Explicit Normal, Speed, A2, and Regal modes retain their requested waveform.
 
 Fast updates mark their affected region as needing cleanup. Balanced submits
 one regional GC16 update after the compositor has been quiet for 600 ms;
 Quality uses 300 ms. Every changed frame extends that deadline, so continuous
 movement never inserts a cleanup flash between scroll frames. Manual
 suppresses automatic cleanup while preserving startup, wake, sleep-clear, and
-explicit full refreshes. Row hashes recognize a constant vertical offset
-during touch-driven scrolling; scrolling uses A2 regardless of the current
-per-app waveform profile and defers the regional cleanup until movement
-stops. Row-hash scroll detection is also opt-in with
-`leaf3-refresh scroll-detect on`.
+explicit full refreshes. The bridge follows stock ONYX behavior by parsing
+the Cypress multitouch stream and entering scrolling mode after movement
+crosses touch slop. A2 is used only when the associated damage spans at least
+one third of the panel, regardless of the current per-app waveform profile.
+Row hashes remain a fallback for unsupported touch reports and released
+flings. Scrolling is enabled when its property is unset, can be disabled with
+`leaf3-refresh scroll-detect off`, and defers regional cleanup until movement
+stops.
 
 The ONYX ioctl embeds an `mxcfb_rect`, whose binary field order is `top`,
 `left`, `width`, `height`. The bridge tracks damage on a 32-pixel tile grid and
@@ -550,6 +550,8 @@ adb shell leaf3-refresh idle battery
 adb shell leaf3-refresh cleanup quality
 adb shell leaf3-refresh cleanup balanced
 adb shell leaf3-refresh cleanup manual
+adb shell leaf3-refresh scroll-detect on
+adb shell leaf3-refresh scroll-detect off
 adb shell leaf3-refresh capture poll
 ```
 
@@ -688,8 +690,10 @@ It provides:
 - Refresh-mode and clean-screen Quick Settings tiles.
 - Native bridge counters and timing diagnostics.
 - An opt-in global grayscale switch using SurfaceFlinger's color matrix.
-- Opt-in content-aware waveform/dither selection for crisp text and images.
-- Opt-in row-hash scroll detection with deferred quality cleanup.
+- Default-on touch-slop scroll detection with a row-hash fallback.
+- Regional post-scroll quality cleanup.
+- A visibly quarantined content-aware control that cannot activate the
+  unstable direct-EBC path.
 - Frontlight on/off.
 - A switch to follow Android's standard brightness slider.
 - A manual frontlight percentage override.

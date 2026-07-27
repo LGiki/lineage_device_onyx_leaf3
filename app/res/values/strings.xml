@@ -19,15 +19,15 @@
     <string name="idle_balanced">Balanced (up to 2 seconds)</string>
     <string name="idle_battery">Battery (up to 5 seconds)</string>
     <string name="ghost_cleanup">Ghost cleanup</string>
-    <string name="cleanup_description">Choose how aggressively fast updates are followed by a full-screen quality cleanup.</string>
+    <string name="cleanup_description">Choose how aggressively fast updates are followed by a regional quality cleanup.</string>
     <string name="cleanup_quality">Quality (frequent cleanup)</string>
     <string name="cleanup_balanced">Balanced</string>
     <string name="cleanup_manual">Manual (no automatic cleanup)</string>
     <string name="disable_animations">Disable Android animations (recommended)</string>
     <string name="clear_on_sleep">Clear retained page while sleeping</string>
     <string name="grayscale">Global grayscale UI</string>
-    <string name="content_aware">Crisp text and grayscale images (experimental)</string>
-    <string name="scroll_detection">Fast waveform while scrolling (experimental)</string>
+    <string name="content_aware">Content-aware refresh (disabled for stability)</string>
+    <string name="scroll_detection">Fast waveform while scrolling</string>
     <string name="frontlight">Frontlight</string>
     <string name="frontlight_enabled">Frontlight enabled</string>
     <string name="follow_android_brightness">Follow Android brightness slider</string>
@@ -38,7 +38,7 @@
     <string name="property_error">Could not apply %1$s</string>
     <string name="diagnostics">Bridge diagnostics</string>
     <string name="refresh_diagnostics">Refresh diagnostics</string>
-    <string name="diagnostics_value">Effective mode: %1$s (%2$s)\nCapture source: %3$s\nIdle fallback: %4$s; cleanup: %5$s\nFrames: %6$d captured, %7$d changed, %8$d dropped, %9$d scrolling\nUpdates: %10$d partial, %11$d full, %12$d split batches, %13$d bi-level\nUpdated pixels: %14$d\nAverage time: capture %15$d µs, compare %16$d µs, submit %17$d µs</string>
+    <string name="diagnostics_value">Effective mode: %1$s (%2$s)\nCapture source: %3$s\nIdle fallback: %4$s; cleanup: %5$s\nFrames: %6$d captured, %7$d changed, %8$d dropped, %9$d scrolling (%10$d gesture, %11$d row hash)\nUpdates: %12$d partial, %13$d full, %14$d split batches, %15$d bi-level\nUpdated pixels: %16$d\nAverage time: capture %17$d µs, compare %18$d µs, submit %19$d µs</string>
     <string name="refresh_tile">Refresh mode</string>
     <string name="refresh_tile_label">Refresh: %1$s</string>
     <string name="clean_tile_label">Clean screen</string>
