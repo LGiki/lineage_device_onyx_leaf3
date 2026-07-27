@@ -5,3 +5,4 @@
 /debug-adb-key.pub
 /.cache/
 /stock-images/
+.DS_Store
