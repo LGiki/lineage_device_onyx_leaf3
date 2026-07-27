@@ -143,8 +143,8 @@ case "${1:-status}" in
             *) cleanup_policy=balanced ;;
         esac
         effective_mode="${active_mode:-${mode:-balanced}}"
-        [ "$content_aware" = 0 ] || content_aware=1
-        [ "$scroll_detect" = 0 ] || scroll_detect=1
+        [ "$content_aware" = 1 ] || content_aware=0
+        [ "$scroll_detect" = 1 ] || scroll_detect=0
         capture_mode=poll
         echo "Leaf3 global refresh mode: $mode"
         echo "Active refresh override: ${active_mode:-none}"
