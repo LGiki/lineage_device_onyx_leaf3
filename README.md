@@ -9,6 +9,9 @@ This is an experimental bring-up, not an official LineageOS port. The build
 produces individual first-boot images; it does **not** produce a vendor image
 or an installable OTA ZIP.
 
+See the [E-Ink optimization roadmap](ROADMAP.md) for the completed work,
+stability gates, and the ordered plan for porting more stock-ROM behavior.
+
 ## Server requirements
 
 Use a current x86_64 Arch Linux installation with:
@@ -841,9 +844,9 @@ adb shell dmesg |
 adb shell dumpsys SurfaceFlinger > leaf3-surfaceflinger.txt
 ```
 
-The primary path is event driven. Keep the polling fallback available while
-validating virtual-display composition and the stock graphics allocator on
-device.
+The production path uses periodic screenshot capture. The event-driven
+virtual-display implementation is retained only for controlled development
+and must not be enabled on normal builds.
 
 ### Settings shortcut crashes SystemUI
 
