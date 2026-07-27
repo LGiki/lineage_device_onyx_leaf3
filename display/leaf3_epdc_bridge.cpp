@@ -675,8 +675,10 @@ public:
   }
 
   // A negative timeout blocks until touch activity arrives.
-  bool wait(int64_t timeout_us, bool *scroll_motion) {
+  bool wait(int64_t timeout_us, bool *scroll_motion,
+            bool *dragging_contact_active) {
     *scroll_motion = false;
+    *dragging_contact_active = false;
     if (fd_ < 0) {
       if (timeout_us > 0) {
         usleep(static_cast<useconds_t>(timeout_us));
@@ -703,6 +705,7 @@ public:
         *scroll_motion |= processEvent(events[i]);
       }
     }
+    *dragging_contact_active = hasDraggingContact();
     return true;
   }
 
@@ -829,6 +832,15 @@ private:
       contact.reported_y = contact.y;
     }
     return scroll_motion;
+  }
+
+  bool hasDraggingContact() const {
+    for (const Contact &contact : slots_) {
+      if (contact.active && contact.dragging) {
+        return true;
+      }
+    }
+    return false;
   }
 
   static constexpr int64_t kMaximumTouchSlots = 32;
@@ -1819,7 +1831,8 @@ int64_t cleanupDelay(CleanupPolicy policy) {
 }
 
 void inputThread(Waiter *waiter, std::atomic<int64_t> *last_touch_us,
-                 std::atomic<int64_t> *last_scroll_motion_us) {
+                 std::atomic<int64_t> *last_scroll_motion_us,
+                 std::atomic<bool> *dragging_contact_active) {
   InputWakeMonitor monitor;
   if (!monitor.init()) {
     ALOGW("touch input %s was not found; scroll detection and touch-assisted "
@@ -1829,9 +1842,11 @@ void inputThread(Waiter *waiter, std::atomic<int64_t> *last_touch_us,
   }
   for (;;) {
     bool scroll_motion = false;
-    if (monitor.wait(-1, &scroll_motion)) {
+    bool active_drag = false;
+    if (monitor.wait(-1, &scroll_motion, &active_drag)) {
       const int64_t now_us = monotonicMicros();
       last_touch_us->store(now_us, std::memory_order_relaxed);
+      dragging_contact_active->store(active_drag, std::memory_order_relaxed);
       if (scroll_motion) {
         last_scroll_motion_us->store(now_us, std::memory_order_relaxed);
       }
@@ -1906,7 +1921,9 @@ int main() {
   Waiter waiter;
   std::atomic<int64_t> last_touch_us{0};
   std::atomic<int64_t> last_scroll_motion_us{0};
-  std::thread(inputThread, &waiter, &last_touch_us, &last_scroll_motion_us)
+  std::atomic<bool> dragging_contact_active{false};
+  std::thread(inputThread, &waiter, &last_touch_us, &last_scroll_motion_us,
+              &dragging_contact_active)
       .detach();
   std::thread(propertyThread, &waiter).detach();
 
@@ -2114,6 +2131,18 @@ int main() {
       const int64_t touch_us = last_touch_us.load(std::memory_order_relaxed);
       const int64_t scroll_motion_us =
           last_scroll_motion_us.load(std::memory_order_relaxed);
+      const bool active_drag =
+          dragging_contact_active.load(std::memory_order_relaxed);
+      const bool recent_scroll_motion =
+          scroll_motion_us != 0 &&
+          now_us - scroll_motion_us < kScrollGestureWindowUs;
+      // A contact that has crossed touch slop remains a gesture until its
+      // tracking ID is released. Recent motion then provides the short
+      // post-release continuation used for fling startup.
+      const bool gesture_scrolling = active_drag || recent_scroll_motion;
+      const bool established_fling_live =
+          scroll_in_progress && touch_us != 0 &&
+          now_us - touch_us < kScrollFlingWindowUs;
 
       bool scrolling = false;
       if (changed && !full_refresh && settings.scroll_detect) {
@@ -2123,9 +2152,6 @@ int main() {
         // browser viewports, so use one third while retaining the row-shift
         // vote check that rejects ordinary taps.
         if (static_cast<uint64_t>(box.bottom - box.top) * 3 > frame.height) {
-          const bool gesture_scrolling =
-              scroll_motion_us != 0 &&
-              now_us - scroll_motion_us < kScrollGestureWindowUs;
           const bool allow_hash =
               touch_us != 0 &&
               now_us - touch_us < (scroll_in_progress ? kScrollFlingWindowUs
@@ -2146,7 +2172,12 @@ int main() {
         }
       }
       if (changed) {
-        scroll_in_progress = scrolling;
+        // Narrow damage such as a scrollbar or caret is intentionally not
+        // promoted to A2, but it must not erase a live drag or the extended
+        // row-hash window of an established fling.
+        scroll_in_progress =
+            settings.scroll_detect &&
+            (scrolling || gesture_scrolling || established_fling_live);
       }
 
       if (changed) {
