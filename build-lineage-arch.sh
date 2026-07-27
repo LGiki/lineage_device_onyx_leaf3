@@ -343,6 +343,13 @@ readonly ASSIST_MANAGER_SOURCE="$SOURCE_DIR/frameworks/base/packages/SystemUI/sr
 python3 "$TARGET_DEVICE_DIR/tools/patch-systemui-assist-handler.py" \
   "$ASSIST_MANAGER_SOURCE"
 
+log "Adding the Leaf3 SurfaceFlinger frame notifier"
+readonly SURFACEFLINGER_SOURCE="$SOURCE_DIR/frameworks/native/services/surfaceflinger/SurfaceFlinger.cpp"
+[[ -f "$SURFACEFLINGER_SOURCE" ]] || \
+  die "missing SurfaceFlinger source: $SURFACEFLINGER_SOURCE"
+python3 "$TARGET_DEVICE_DIR/tools/patch-surfaceflinger-frame-notifier.py" \
+  "$SURFACEFLINGER_SOURCE"
+
 log "Downloading and extracting checksum-pinned stock boot inputs"
 mkdir -p "$STOCK_CACHE_DIR" "$STOCK_IMAGES_DIR"
 BOOX_DOWNLOAD_CONNECTIONS="$DOWNLOAD_CONNECTIONS" \
@@ -423,8 +430,13 @@ grep -Fq 'android.permission.REAL_GET_TASKS' "$LEAF3_PRIVAPP_PERMISSIONS" || \
   die "Leaf3 Controls allowlist is missing foreground-task access"
 python3 "$TARGET_DEVICE_DIR/tools/patch-systemui-assist-handler.py" --check \
   "$ASSIST_MANAGER_SOURCE"
+python3 "$TARGET_DEVICE_DIR/tools/patch-surfaceflinger-frame-notifier.py" --check \
+  "$SURFACEFLINGER_SOURCE"
 python3 "$TARGET_DEVICE_DIR/tools/patch-vintf-kernel-matrix.py" --check \
   "$PRODUCT_OUT/system/etc/vintf/compatibility_matrix.5.xml"
+grep -aFq 'Leaf3 frame notifier registered' \
+  "$PRODUCT_OUT/system/bin/surfaceflinger" || \
+  die "built SurfaceFlinger is missing the Leaf3 frame notifier"
 grep -Fxq 'ro.adb.secure=1' "$PRODUCT_OUT/system/etc/prop.default" || \
   die "build did not enable authenticated ADB in system/etc/prop.default"
 [[ -s "$PRODUCT_OUT/system_ext/etc/selinux/system_ext_sepolicy.cil" ]] || \

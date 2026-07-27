@@ -5,8 +5,8 @@
  *
  * BOOX Leaf3 uses a dummy DSI connector as Android's primary display. The
  * actual E-Ink panel is updated through ONYX's private /dev/ebc interface.
- * Mirror SurfaceFlinger's primary layer stack into a virtual display and
- * forward the changed regions of every composed frame to EBC.
+ * Capture SurfaceFlinger's primary display and forward changed regions to
+ * EBC. An optional frame notifier avoids polling while the display is idle.
  */
 
 #define LOG_TAG "leaf3_epdc_bridge"
@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/eventfd.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #define _REALLY_INCLUDE_SYS__SYSTEM_PROPERTIES_H_
@@ -42,12 +43,15 @@
 #include <vector>
 
 #include <android-base/properties.h>
+#include <binder/IServiceManager.h>
+#include <binder/Parcel.h>
 #include <binder/ProcessState.h>
 #include <gui/BufferItem.h>
 #include <gui/BufferItemConsumer.h>
 #include <gui/BufferQueue.h>
 #include <gui/IGraphicBufferConsumer.h>
 #include <gui/IGraphicBufferProducer.h>
+#include <gui/ISurfaceComposer.h>
 #include <gui/SurfaceComposerClient.h>
 #include <log/log.h>
 #include <ui/DisplayConfig.h>
@@ -58,6 +62,7 @@
 #include <ui/Rect.h>
 #include <ui/Rotation.h>
 #include <utils/Errors.h>
+#include <utils/String16.h>
 #include <utils/String8.h>
 
 namespace {
@@ -137,7 +142,12 @@ constexpr int64_t kBalancedCleanupDelayUs = 600000;
 constexpr int64_t kQualityCleanupDelayUs = 300000;
 
 constexpr int64_t kStatsPublishIntervalUs = 60000000;
-constexpr int64_t kStreamStartupTimeoutUs = 3000000;
+constexpr int64_t kNotifierInputProbeDelayUs = 250000;
+constexpr int64_t kNotifierSafetyProbeDelayUs = 30000000;
+constexpr int64_t kNotifierCaptureRetryDelayUs = 100000;
+constexpr int64_t kNotifierRaceGraceDelayUs = 500000;
+constexpr uint32_t kLeaf3FrameNotifierTransaction = 1037;
+constexpr int32_t kLeaf3FrameNotifierVersion = 1;
 // ONYX changes waveform as soon as a drag crosses Android's touch slop. Keep
 // the raw-input gesture active briefly after the last movement so a released
 // fling stays fast, and allow row hashes to extend an established fling.
@@ -229,6 +239,11 @@ enum class CleanupPolicy {
   kManual,
 };
 
+enum class CaptureMode {
+  kPoll,
+  kNotify,
+};
+
 enum class ContentClass {
   kBiLevel,
   kGrayscale,
@@ -242,7 +257,7 @@ struct Settings {
   bool scroll_detect = true;
   bool clear_on_sleep = true;
   bool interactive = true;
-  bool prefer_stream = false;
+  CaptureMode capture_mode = CaptureMode::kPoll;
   bool frontlight_enabled = true;
   int android_brightness = 128;
   int frontlight_override = -1;
@@ -456,12 +471,12 @@ public:
     settings_.scroll_detect = parseInteger(scroll_detect, 1) != 0;
     settings_.clear_on_sleep = parseInteger(clear_on_sleep, 1) != 0;
     settings_.interactive = parseInteger(interactive, 1) != 0;
-    // The Qualcomm/ONYX display stack becomes unstable when its virtual
-    // display and private EBC path are active together under composition load.
-    // Keep the stream implementation for controlled probing, but do not select
-    // it in production even if an older data partition persisted "stream".
-    (void)capture_mode;
-    settings_.prefer_stream = false;
+    // The virtual-display stream remains quarantined. "notify" retains
+    // ScreenshotClient capture and changes only how SurfaceFlinger wakes it.
+    settings_.capture_mode =
+        std::string(propertyValue(capture_mode, "poll")) == "notify"
+            ? CaptureMode::kNotify
+            : CaptureMode::kPoll;
     settings_.frontlight_enabled = parseInteger(frontlight_enabled, 1) != 0;
     settings_.android_brightness = std::clamp(
         parseInteger(android_brightness, 128), 0, kAndroidBrightnessMax);
@@ -873,6 +888,10 @@ public:
   virtual void release() = 0;
   virtual bool streaming() const = 0;
   virtual uint64_t dropped() const { return 0; }
+  virtual void onWake(uint32_t) {}
+  virtual int64_t nextWakeDeadlineUs() const { return 0; }
+  virtual void onFrameCompared(bool) {}
+  virtual bool failed() { return false; }
 };
 
 // Mirrors the primary layer stack into a virtual display. SurfaceFlinger
@@ -1153,6 +1172,331 @@ public:
 private:
   std::optional<PhysicalDisplayId> display_id_;
   sp<GraphicBuffer> held_;
+};
+
+// Uses a private, device-specific SurfaceFlinger transaction to register an
+// eventfd. The compositor signal changes only when screenshots are requested;
+// capture and EBC submission remain on the known-good production path.
+class NotifiedScreenshotFrameSource : public FrameSource {
+public:
+  explicit NotifiedScreenshotFrameSource(Waiter *waiter) : waiter_(waiter) {}
+  ~NotifiedScreenshotFrameSource() override { stop(); }
+
+  bool start() override {
+    if (!screenshot_.start()) {
+      return false;
+    }
+
+    event_fd_ = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    stop_fd_ = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    if (event_fd_ < 0 || stop_fd_ < 0) {
+      ALOGW("cannot create frame-notifier eventfds: %s", strerror(errno));
+      stop();
+      return false;
+    }
+
+    surface_flinger_ = android::defaultServiceManager()->checkService(
+        android::String16("SurfaceFlinger"));
+    if (surface_flinger_ == nullptr) {
+      ALOGW("SurfaceFlinger service is unavailable for frame notification");
+      stop();
+      return false;
+    }
+
+    death_observer_ = new DeathObserver(&failed_, waiter_);
+    if (surface_flinger_->linkToDeath(death_observer_) != NO_ERROR) {
+      ALOGW("cannot monitor SurfaceFlinger frame notifier lifetime");
+      stop();
+      return false;
+    }
+    linked_to_death_ = true;
+
+    if (setRegistration(true) != NO_ERROR) {
+      ALOGW("SurfaceFlinger rejected the Leaf3 frame notifier");
+      stop();
+      return false;
+    }
+    registered_ = true;
+
+    running_.store(true, std::memory_order_release);
+    notification_thread_ =
+        std::thread(&NotifiedScreenshotFrameSource::notificationThread, this);
+    force_initial_capture_ = true;
+    next_safety_probe_us_ = monotonicMicros() + kNotifierSafetyProbeDelayUs;
+    ALOGI("capture mode: SurfaceFlinger frame notification");
+    return true;
+  }
+
+  void stop() override {
+    screenshot_.release();
+
+    if (registered_ && surface_flinger_ != nullptr) {
+      (void)setRegistration(false);
+      registered_ = false;
+    }
+    if (linked_to_death_ && surface_flinger_ != nullptr &&
+        death_observer_ != nullptr) {
+      surface_flinger_->unlinkToDeath(death_observer_);
+      linked_to_death_ = false;
+    }
+
+    running_.store(false, std::memory_order_release);
+    if (stop_fd_ >= 0) {
+      const uint64_t signal = 1;
+      ssize_t written;
+      do {
+        written = write(stop_fd_, &signal, sizeof(signal));
+      } while (written < 0 && errno == EINTR);
+    }
+    if (notification_thread_.joinable()) {
+      notification_thread_.join();
+    }
+
+    death_observer_.clear();
+    surface_flinger_.clear();
+    if (event_fd_ >= 0) {
+      close(event_fd_);
+      event_fd_ = -1;
+    }
+    if (stop_fd_ >= 0) {
+      close(stop_fd_);
+      stop_fd_ = -1;
+    }
+    pending_.store(false, std::memory_order_relaxed);
+    input_probe_deadline_us_ = 0;
+    next_safety_probe_us_ = 0;
+    capture_retry_deadline_us_ = 0;
+    miss_confirmation_deadline_us_ = 0;
+    probe_generation_ = 0;
+    miss_confirmation_generation_ = 0;
+    current_capture_is_probe_ = false;
+    force_initial_capture_ = false;
+    screenshot_.stop();
+  }
+
+  bool acquire(Frame *frame) override {
+    const int64_t now_us = monotonicMicros();
+    const bool notification = pending_.exchange(false);
+    const bool input_probe =
+        input_probe_deadline_us_ != 0 && now_us >= input_probe_deadline_us_;
+    const bool safety_probe =
+        next_safety_probe_us_ != 0 && now_us >= next_safety_probe_us_;
+    if (!force_initial_capture_ && !notification && !input_probe &&
+        !safety_probe) {
+      return false;
+    }
+
+    current_capture_is_probe_ = !force_initial_capture_ && !notification &&
+                                (input_probe || safety_probe);
+    const bool initial_capture = force_initial_capture_;
+    const uint64_t probe_generation =
+        notification_generation_.load(std::memory_order_acquire);
+    force_initial_capture_ = false;
+    input_probe_deadline_us_ = 0;
+    capture_retry_deadline_us_ = 0;
+
+    if (!screenshot_.acquire(frame)) {
+      // Consuming the wake before capture is safe only after a frame has been
+      // acquired. Preserve every trigger and retry soon without spinning.
+      if (notification) {
+        pending_.store(true, std::memory_order_release);
+      }
+      force_initial_capture_ |= initial_capture;
+      if (input_probe) {
+        input_probe_deadline_us_ = now_us + kNotifierCaptureRetryDelayUs;
+      }
+      if (safety_probe) {
+        next_safety_probe_us_ = now_us + kNotifierCaptureRetryDelayUs;
+      }
+      capture_retry_deadline_us_ = now_us + kNotifierCaptureRetryDelayUs;
+      current_capture_is_probe_ = false;
+      return false;
+    }
+
+    if (current_capture_is_probe_) {
+      probe_generation_ = probe_generation;
+    }
+    next_safety_probe_us_ = now_us + kNotifierSafetyProbeDelayUs;
+    return true;
+  }
+
+  void release() override { screenshot_.release(); }
+  bool streaming() const override { return true; }
+  uint64_t dropped() const override {
+    return dropped_.load(std::memory_order_relaxed);
+  }
+
+  void onWake(uint32_t reasons) override {
+    if ((reasons & Waiter::kFrame) != 0) {
+      input_probe_deadline_us_ = 0;
+      return;
+    }
+    if ((reasons & Waiter::kInput) != 0) {
+      input_probe_deadline_us_ = monotonicMicros() + kNotifierInputProbeDelayUs;
+    }
+  }
+
+  int64_t nextWakeDeadlineUs() const override {
+    int64_t deadline_us = 0;
+    const int64_t deadlines[] = {
+        input_probe_deadline_us_,
+        next_safety_probe_us_,
+        capture_retry_deadline_us_,
+        miss_confirmation_deadline_us_,
+    };
+    for (const int64_t candidate_us : deadlines) {
+      if (candidate_us != 0 &&
+          (deadline_us == 0 || candidate_us < deadline_us)) {
+        deadline_us = candidate_us;
+      }
+    }
+    return deadline_us;
+  }
+
+  void onFrameCompared(bool changed) override {
+    if (current_capture_is_probe_ && changed &&
+        notification_generation_.load(std::memory_order_acquire) ==
+            probe_generation_) {
+      // SurfaceFlinger may have committed the captured frame but not yet
+      // reached its postFrame() eventfd write. Give that real notification a
+      // bounded opportunity to arrive before declaring the notifier stalled.
+      miss_confirmation_generation_ = probe_generation_;
+      miss_confirmation_deadline_us_ =
+          monotonicMicros() + kNotifierRaceGraceDelayUs;
+      ALOGW("probe found an unnotified change; awaiting notifier correlation");
+    }
+    current_capture_is_probe_ = false;
+  }
+
+  bool failed() override {
+    if (miss_confirmation_deadline_us_ != 0) {
+      if (notification_generation_.load(std::memory_order_acquire) !=
+          miss_confirmation_generation_) {
+        ALOGI("probe damage correlated with a racing frame notification");
+        miss_confirmation_deadline_us_ = 0;
+      } else if (monotonicMicros() >= miss_confirmation_deadline_us_) {
+        ALOGE(
+            "frame notifier missed a visible change; falling back to polling");
+        miss_confirmation_deadline_us_ = 0;
+        failed_.store(true, std::memory_order_release);
+      }
+    }
+    return failed_.load(std::memory_order_acquire);
+  }
+
+private:
+  class DeathObserver : public IBinder::DeathRecipient {
+  public:
+    DeathObserver(std::atomic<bool> *failed, Waiter *waiter)
+        : failed_(failed), waiter_(waiter) {}
+
+    void binderDied(const android::wp<IBinder> &) override {
+      ALOGE("SurfaceFlinger died while frame notification was active");
+      failed_->store(true, std::memory_order_release);
+      waiter_->signal(Waiter::kFrame);
+    }
+
+  private:
+    std::atomic<bool> *failed_;
+    Waiter *waiter_;
+  };
+
+  status_t setRegistration(bool enable) {
+    if (surface_flinger_ == nullptr) {
+      return android::DEAD_OBJECT;
+    }
+
+    android::Parcel data;
+    android::Parcel reply;
+    data.writeInterfaceToken(
+        android::ISurfaceComposer::getInterfaceDescriptor());
+    data.writeInt32(kLeaf3FrameNotifierVersion);
+    data.writeInt32(enable ? 1 : 0);
+    if (enable) {
+      data.writeFileDescriptor(event_fd_);
+    }
+
+    const status_t status = surface_flinger_->transact(
+        kLeaf3FrameNotifierTransaction, data, &reply);
+    if (status != NO_ERROR) {
+      return status;
+    }
+    return static_cast<status_t>(reply.readInt32());
+  }
+
+  void notificationThread() {
+    pollfd descriptors[2] = {
+        {event_fd_, POLLIN, 0},
+        {stop_fd_, POLLIN, 0},
+    };
+    while (running_.load(std::memory_order_acquire)) {
+      const int result = poll(descriptors, 2, -1);
+      if (result < 0) {
+        if (errno == EINTR) {
+          continue;
+        }
+        ALOGE("frame notifier poll failed: %s", strerror(errno));
+        failed_.store(true, std::memory_order_release);
+        waiter_->signal(Waiter::kFrame);
+        return;
+      }
+      if ((descriptors[1].revents & POLLIN) != 0) {
+        return;
+      }
+      if ((descriptors[0].revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+        ALOGE("frame notifier eventfd became invalid");
+        failed_.store(true, std::memory_order_release);
+        waiter_->signal(Waiter::kFrame);
+        return;
+      }
+      if ((descriptors[0].revents & POLLIN) == 0) {
+        continue;
+      }
+
+      uint64_t count = 0;
+      if (read(event_fd_, &count, sizeof(count)) !=
+          static_cast<ssize_t>(sizeof(count))) {
+        if (errno == EAGAIN) {
+          continue;
+        }
+        ALOGE("frame notifier read failed: %s", strerror(errno));
+        failed_.store(true, std::memory_order_release);
+        waiter_->signal(Waiter::kFrame);
+        return;
+      }
+      notification_generation_.fetch_add(count, std::memory_order_release);
+      const bool already_pending =
+          pending_.exchange(true, std::memory_order_acq_rel);
+      const uint64_t coalesced = already_pending ? count
+                                 : count > 0     ? count - 1
+                                                 : 0;
+      dropped_.fetch_add(coalesced, std::memory_order_relaxed);
+      waiter_->signal(Waiter::kFrame);
+    }
+  }
+
+  Waiter *waiter_;
+  ScreenshotFrameSource screenshot_;
+  sp<IBinder> surface_flinger_;
+  sp<DeathObserver> death_observer_;
+  std::thread notification_thread_;
+  std::atomic<bool> running_{false};
+  std::atomic<bool> pending_{false};
+  std::atomic<bool> failed_{false};
+  std::atomic<uint64_t> dropped_{0};
+  std::atomic<uint64_t> notification_generation_{0};
+  int event_fd_ = -1;
+  int stop_fd_ = -1;
+  int64_t input_probe_deadline_us_ = 0;
+  int64_t next_safety_probe_us_ = 0;
+  int64_t capture_retry_deadline_us_ = 0;
+  int64_t miss_confirmation_deadline_us_ = 0;
+  uint64_t probe_generation_ = 0;
+  uint64_t miss_confirmation_generation_ = 0;
+  bool force_initial_capture_ = false;
+  bool current_capture_is_probe_ = false;
+  bool registered_ = false;
+  bool linked_to_death_ = false;
 };
 
 class EbcDevice {
@@ -1877,32 +2221,15 @@ void propertyThread(Waiter *waiter) {
   }
 }
 
-std::unique_ptr<FrameSource> startFrameSource(bool prefer_stream,
+std::unique_ptr<FrameSource> startFrameSource(CaptureMode mode,
                                               Waiter *waiter) {
-  if (prefer_stream) {
-    auto mirror = std::make_unique<MirrorFrameSource>(waiter);
-    if (mirror->start()) {
-      // Creating the display forces a composition, so a healthy mirror always
-      // produces its first frame quickly.
-      const int64_t deadline = monotonicMicros() + kStreamStartupTimeoutUs;
-      for (;;) {
-        Frame frame;
-        if (mirror->acquire(&frame)) {
-          // Keep this first, guaranteed frame locked. The main loop consumes it
-          // as the startup full refresh instead of waiting for a second change.
-          android::base::SetProperty("sys.leaf3.stat.capture_mode", "stream");
-          ALOGI("capture mode: compositor stream");
-          return mirror;
-        }
-        const int64_t remaining = deadline - monotonicMicros();
-        if (remaining <= 0) {
-          break;
-        }
-        waiter->wait(std::min<int64_t>(remaining, 200000));
-      }
-      ALOGW("the mirror display produced no frame; falling back to polling");
+  if (mode == CaptureMode::kNotify) {
+    auto notified = std::make_unique<NotifiedScreenshotFrameSource>(waiter);
+    if (notified->start()) {
+      android::base::SetProperty("sys.leaf3.stat.capture_mode", "notify");
+      return notified;
     }
-    mirror->stop();
+    ALOGW("frame notification unavailable; falling back to polling");
   }
 
   auto screenshot = std::make_unique<ScreenshotFrameSource>();
@@ -1938,7 +2265,7 @@ int main() {
   Settings settings = settings_cache.read();
   std::unique_ptr<FrameSource> source;
   if (settings.interactive) {
-    source = startFrameSource(settings.prefer_stream, &waiter);
+    source = startFrameSource(settings.capture_mode, &waiter);
   }
 
   bool initialized = false;
@@ -1948,7 +2275,7 @@ int main() {
   bool cleanup_pending = false;
   bool cleanup_damage_valid = false;
   bool scroll_in_progress = false;
-  bool source_prefers_stream = settings.prefer_stream;
+  CaptureMode source_requested_mode = settings.capture_mode;
   uint32_t unchanged_frames = 0;
   uint32_t idle_poll_count = 0;
   uint32_t input_probe_frames = 0;
@@ -2021,16 +2348,16 @@ int main() {
       display_was_on = true;
       first_refresh = true;
       input_probe_frames = kInputProbeFrames;
-      source = startFrameSource(settings.prefer_stream, &waiter);
-      source_prefers_stream = settings.prefer_stream;
+      source = startFrameSource(settings.capture_mode, &waiter);
+      source_requested_mode = settings.capture_mode;
       source_dropped_seen = 0;
     }
 
-    if (settings.prefer_stream != source_prefers_stream) {
+    if (settings.capture_mode != source_requested_mode) {
       ALOGI("capture preference changed; recreating the frame source");
       source->stop();
-      source = startFrameSource(settings.prefer_stream, &waiter);
-      source_prefers_stream = settings.prefer_stream;
+      source = startFrameSource(settings.capture_mode, &waiter);
+      source_requested_mode = settings.capture_mode;
       source_dropped_seen = 0;
       first_refresh = true;
       previous.clear();
@@ -2039,6 +2366,15 @@ int main() {
       cleanup_damage_valid = false;
       scroll_in_progress = false;
       cleanup_deadline_us = 0;
+    }
+
+    if (source->failed()) {
+      ALOGW("frame notification failed; continuing with periodic screenshots");
+      source->stop();
+      source = startFrameSource(CaptureMode::kPoll, &waiter);
+      source_dropped_seen = 0;
+      input_probe_frames = kInputProbeFrames;
+      idle_poll_count = 0;
     }
 
     if (settings.mode != active_mode) {
@@ -2358,6 +2694,7 @@ int main() {
         unchanged_frames = std::min(unchanged_frames + 1, kIdleThresholdFrames);
       }
 
+      source->onFrameCompared(changed);
       source->release();
     }
 
@@ -2393,13 +2730,25 @@ int main() {
 
     if (source->streaming()) {
       // Nothing to poll: sleep until the compositor, a touch or a settings
-      // change has something to say, or until a deferred cleanup comes due.
+      // change has something to say, or until cleanup or a notifier health
+      // probe comes due.
       int64_t timeout_us = -1;
       if (cleanup_pending && cleanup_deadline_us != 0) {
         timeout_us =
             std::max<int64_t>(0, cleanup_deadline_us - monotonicMicros());
       }
-      waiter.wait(timeout_us);
+      const int64_t source_deadline_us = source->nextWakeDeadlineUs();
+      if (source_deadline_us != 0) {
+        const int64_t source_timeout_us =
+            std::max<int64_t>(0, source_deadline_us - monotonicMicros());
+        timeout_us = timeout_us < 0 ? source_timeout_us
+                                    : std::min(timeout_us, source_timeout_us);
+      }
+      const uint32_t reasons = waiter.wait(timeout_us);
+      source->onWake(reasons);
+      if ((reasons & Waiter::kInput) != 0) {
+        input_probe_frames = kInputProbeFrames;
+      }
       continue;
     }
 

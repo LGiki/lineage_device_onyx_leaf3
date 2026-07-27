@@ -18,7 +18,7 @@ usage() {
     echo "       leaf3-refresh cleanup {quality|balanced|manual}" >&2
     echo "       leaf3-refresh content-aware off" >&2
     echo "       leaf3-refresh scroll-detect {on|off}" >&2
-    echo "       leaf3-refresh capture poll" >&2
+    echo "       leaf3-refresh capture {poll|notify}" >&2
     exit 2
 }
 
@@ -78,7 +78,7 @@ case "${1:-status}" in
         ;;
     capture)
         case "${2:-}" in
-            poll)
+            poll|notify)
                 setprop "$capture_mode_property" "$2"
                 echo "Leaf3 preferred capture source: $2"
                 ;;
@@ -148,7 +148,10 @@ case "${1:-status}" in
         effective_mode="${active_mode:-${mode:-balanced}}"
         content_aware=0
         [ "$scroll_detect" = 0 ] || scroll_detect=1
-        capture_mode=poll
+        case "$capture_mode" in
+            notify) ;;
+            *) capture_mode=poll ;;
+        esac
         echo "Leaf3 global refresh mode: $mode"
         echo "Active refresh override: ${active_mode:-none}"
         echo "Active refresh source: ${active_source:-default}"

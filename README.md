@@ -428,16 +428,21 @@ five-integer EPDC entries (`left`, `top`, `right`, `bottom`, and waveform
 mode); SurfaceFlinger merges them and the vendor composer's `CommitEpdc`
 command submits the regions with the same HWC frame. Those core stock
 components are not binary-compatible replacements for LineageOS. This device
-tree instead builds `leaf3_epdc_bridge`, a small native service which
-periodically captures the primary display with `ScreenshotClient::capture()`
-and forwards changed regions to `/dev/ebc`. It uses one full GC16 refresh at
-startup and then sends one coalesced damage rectangle per frame.
+tree instead builds `leaf3_epdc_bridge`, a small native service which captures
+the primary display with `ScreenshotClient::capture()` and forwards changed
+regions to `/dev/ebc`. Polling remains the default. An opt-in LineageOS 18.1
+SurfaceFlinger hook can signal the bridge after a physical-display commit,
+avoiding unchanged idle captures without creating a virtual display. The
+bridge uses one full GC16 refresh at startup and then sends one coalesced
+damage rectangle per frame.
 
 An event-driven `BufferItemConsumer` implementation remains in the source for
 controlled development, but it is not selected in production. On this
 Qualcomm/ONYX stack, an active virtual display combined with the private EBC
-path becomes unstable during composition load. The active source is reported
-by `leaf3-refresh status`, Leaf3 Controls, and
+path becomes unstable during composition load. The safe notification mode
+still uses screenshots and automatically falls back to polling if registration
+fails, SurfaceFlinger dies, or a health probe finds an unnotified change. The
+active source is reported by `leaf3-refresh status`, Leaf3 Controls, and
 `sys.leaf3.stat.capture_mode`.
 
 The bridge exposes the stock ONYX waveform strategies globally. The values
@@ -502,10 +507,10 @@ the stock Qualcomm allocator and HWC. The preserved vendor init already
 publishes the stock 300 DPI as `ro.sf.lcd_density`, so this tree does not
 replace it with a guessed value.
 
-Rebuild the images. The command-line tools change `system.img`; the bridge,
-policy, and Leaf3 Controls change `system_ext.img`; framework and SystemUI
-overlays plus the SurfaceFlinger property change `product.img`. The build
-regenerates `vbmeta.img` for their new hashes:
+Rebuild the images. The command-line tools and patched SurfaceFlinger change
+`system.img`; the bridge, policy, and Leaf3 Controls change `system_ext.img`;
+framework and SystemUI overlays plus the SurfaceFlinger property change
+`product.img`. The build regenerates `vbmeta.img` for their new hashes:
 
 ```sh
 ./build-lineage-arch.sh \
@@ -534,6 +539,9 @@ capture mode: periodic screenshot
 touch wake-up enabled on /dev/input/event3 (cyttsp5_mt)
 ```
 
+After opting in with `leaf3-refresh capture notify`, the capture log changes
+to `capture mode: SurfaceFlinger frame notification`.
+
 Change the global strategy without rebooting:
 
 ```sh
@@ -555,12 +563,15 @@ adb shell leaf3-refresh cleanup balanced
 adb shell leaf3-refresh cleanup manual
 adb shell leaf3-refresh scroll-detect on
 adb shell leaf3-refresh scroll-detect off
+adb shell leaf3-refresh capture notify
 adb shell leaf3-refresh capture poll
 ```
 
-Idle capture affects only polling fallback. The selections persist across
-reboots. Request a one-time full GC16 cleanup
-after visible ghosting with:
+Notification capture is opt-in and persists across reboots. It wakes on
+SurfaceFlinger commits, probes after unacknowledged touch, and performs a
+30-second safety probe while idle. Idle capture policy affects only polling
+and polling fallback. Request a one-time full GC16 cleanup after visible
+ghosting with:
 
 ```sh
 adb shell leaf3-refresh full
@@ -844,9 +855,11 @@ adb shell dmesg |
 adb shell dumpsys SurfaceFlinger > leaf3-surfaceflinger.txt
 ```
 
-The production path uses periodic screenshot capture. The event-driven
-virtual-display implementation is retained only for controlled development
-and must not be enabled on normal builds.
+The default production path uses periodic screenshot capture. The opt-in
+`notify` path uses the same screenshot and EBC code after a SurfaceFlinger
+eventfd wake. The separate event-driven virtual-display implementation is
+retained only for controlled development and must not be enabled on normal
+builds.
 
 ### Settings shortcut crashes SystemUI
 

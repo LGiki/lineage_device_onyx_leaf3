@@ -30,7 +30,7 @@ quarantined because both caused crashes under composition or scrolling load.
 | Phase | Status | Goal | Risk |
 | --- | --- | --- | --- |
 | 0 | Complete | Stabilize and optimize the screenshot/EBC bridge | Low |
-| 1 | Next | Wake screenshot capture from a SurfaceFlinger frame notification | Low to medium |
+| 1 | Validation | Wake screenshot capture from a SurfaceFlinger frame notification | Low to medium |
 | 2 | Planned | Deliver compositor damage with the notification | Medium |
 | 3 | Planned | Add conservative automatic application profiles | Low |
 | 4 | Planned | Make grayscale the default for new installations | Low |
@@ -39,6 +39,9 @@ quarantined because both caused crashes under composition or scrolling load.
 | 7 | Research | Expose stock-style per-surface E-Ink controls | High |
 
 ### Phase 1: SurfaceFlinger frame notification
+
+The opt-in notification implementation is present. It remains in validation
+status until it passes the hardware gate below; polling is still the default.
 
 Add a small, LineageOS 18.1-specific SurfaceFlinger integration that signals a
 nonblocking `eventfd` after a physical-display frame is committed. The bridge
