@@ -51,7 +51,6 @@
 #include <gui/BufferQueue.h>
 #include <gui/IGraphicBufferConsumer.h>
 #include <gui/IGraphicBufferProducer.h>
-#include <gui/ISurfaceComposer.h>
 #include <gui/SurfaceComposerClient.h>
 #include <log/log.h>
 #include <ui/DisplayConfig.h>
@@ -1408,8 +1407,7 @@ private:
 
     android::Parcel data;
     android::Parcel reply;
-    data.writeInterfaceToken(
-        android::ISurfaceComposer::getInterfaceDescriptor());
+    data.writeInterfaceToken(android::String16("android.ui.ISurfaceComposer"));
     data.writeInt32(kLeaf3FrameNotifierVersion);
     data.writeInt32(enable ? 1 : 0);
     if (enable) {
