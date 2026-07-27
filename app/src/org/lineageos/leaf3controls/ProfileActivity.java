@@ -11,10 +11,9 @@ import android.os.Bundle;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.BaseAdapter;
+import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.ListView;
 import android.widget.TextView;
 
 import java.util.ArrayList;
@@ -25,13 +24,18 @@ import java.util.List;
 import java.util.Set;
 
 public final class ProfileActivity extends Activity {
+  private static final int APPS_PER_PAGE = 6;
   private static final String[] PROFILE_MODES = {
       "", Leaf3Settings.MODE_BALANCED, Leaf3Settings.MODE_NORMAL,
       Leaf3Settings.MODE_SPEED, Leaf3Settings.MODE_A2, Leaf3Settings.MODE_REGAL
   };
 
   private final List<AppEntry> apps = new ArrayList<>();
-  private ProfileAdapter adapter;
+  private LinearLayout appList;
+  private Button previousButton;
+  private Button nextButton;
+  private TextView pageLabel;
+  private int page;
 
   @Override
   protected void onCreate(Bundle savedInstanceState) {
@@ -39,11 +43,64 @@ public final class ProfileActivity extends Activity {
     setContentView(R.layout.activity_profiles);
 
     loadApps();
-    adapter = new ProfileAdapter();
-    final ListView list = findViewById(R.id.profile_list);
-    list.setAdapter(adapter);
-    list.setOnItemClickListener((parent, view, position, id) ->
-        chooseMode(apps.get(position)));
+    appList = findViewById(R.id.profile_list);
+    previousButton = findViewById(R.id.profile_previous);
+    nextButton = findViewById(R.id.profile_next);
+    pageLabel = findViewById(R.id.profile_page);
+    previousButton.setOnClickListener(view -> showPage(page - 1));
+    nextButton.setOnClickListener(view -> showPage(page + 1));
+    showPage(0);
+  }
+
+  private void showPage(int requestedPage) {
+    final int pageCount = Math.max(
+        1, (apps.size() + APPS_PER_PAGE - 1) / APPS_PER_PAGE);
+    page = Math.max(0, Math.min(requestedPage, pageCount - 1));
+    previousButton.setEnabled(page > 0);
+    nextButton.setEnabled(page + 1 < pageCount);
+    pageLabel.setText(getString(R.string.profile_page, page + 1, pageCount));
+    renderPage();
+  }
+
+  private void renderPage() {
+    appList.removeAllViews();
+    final int first = page * APPS_PER_PAGE;
+    final int last = Math.min(first + APPS_PER_PAGE, apps.size());
+    for (int index = first; index < last; ++index) {
+      if (index > first) {
+        final View divider = new View(this);
+        divider.setBackgroundColor(0x66000000);
+        appList.addView(divider, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(1)));
+      }
+      appList.addView(createAppRow(apps.get(index)));
+    }
+  }
+
+  private View createAppRow(AppEntry entry) {
+    final LinearLayout row = new LinearLayout(this);
+    row.setOrientation(LinearLayout.HORIZONTAL);
+    row.setGravity(Gravity.CENTER_VERTICAL);
+    row.setMinimumHeight(dp(72));
+    row.setPadding(dp(16), dp(8), dp(16), dp(8));
+    row.setOnClickListener(view -> chooseMode(entry));
+
+    final ImageView icon = new ImageView(this);
+    icon.setImageDrawable(entry.icon);
+    row.addView(icon, new LinearLayout.LayoutParams(dp(48), dp(48)));
+
+    final String profile = Leaf3Settings.getProfile(this, entry.packageName);
+    final String modeLabel = profile.isEmpty()
+        ? getString(R.string.use_global_default)
+        : Leaf3Settings.modeLabel(this, profile);
+    final TextView text = new TextView(this);
+    text.setText(getString(R.string.profile_row, entry.label, modeLabel));
+    text.setTextColor(0xff000000);
+    text.setTextSize(18);
+    text.setPadding(dp(16), 0, 0, 0);
+    row.addView(text, new LinearLayout.LayoutParams(
+        0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+    return row;
   }
 
   private void loadApps() {
@@ -85,13 +142,13 @@ public final class ProfileActivity extends Activity {
   }
 
   private void chooseMode(AppEntry entry) {
-    final String[] labels = {
-        getString(R.string.use_global_default),
-        getString(R.string.balanced),
-        getString(R.string.normal),
-        getString(R.string.speed),
-        getString(R.string.a2),
-        getString(R.string.regal)
+    final CharSequence[] labels = {
+        getText(R.string.use_global_default_explanation),
+        getText(R.string.balanced_explanation),
+        getText(R.string.normal_explanation),
+        getText(R.string.speed_explanation),
+        getText(R.string.a2_explanation),
+        getText(R.string.regal_explanation)
     };
     final String currentMode = Leaf3Settings.getProfile(this, entry.packageName);
     int checkedItem = 0;
@@ -107,66 +164,11 @@ public final class ProfileActivity extends Activity {
         .setSingleChoiceItems(labels, checkedItem, (dialog, which) -> {
           Leaf3Settings.setProfile(this, entry.packageName,
                                    PROFILE_MODES[which]);
-          adapter.notifyDataSetChanged();
+          renderPage();
           dialog.dismiss();
         })
         .setNegativeButton(android.R.string.cancel, null)
         .show();
-  }
-
-  private final class ProfileAdapter extends BaseAdapter {
-    @Override
-    public int getCount() {
-      return apps.size();
-    }
-
-    @Override
-    public AppEntry getItem(int position) {
-      return apps.get(position);
-    }
-
-    @Override
-    public long getItemId(int position) {
-      return position;
-    }
-
-    @Override
-    public View getView(int position, View convertView, ViewGroup parent) {
-      final LinearLayout row;
-      final ImageView icon;
-      final TextView text;
-      if (convertView instanceof LinearLayout) {
-        row = (LinearLayout) convertView;
-        icon = (ImageView) row.getChildAt(0);
-        text = (TextView) row.getChildAt(1);
-      } else {
-        row = new LinearLayout(ProfileActivity.this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setMinimumHeight(dp(72));
-        row.setPadding(dp(16), dp(8), dp(16), dp(8));
-
-        icon = new ImageView(ProfileActivity.this);
-        row.addView(icon, new LinearLayout.LayoutParams(dp(48), dp(48)));
-
-        text = new TextView(ProfileActivity.this);
-        text.setTextColor(0xff000000);
-        text.setTextSize(18);
-        text.setPadding(dp(16), 0, 0, 0);
-        row.addView(text, new LinearLayout.LayoutParams(
-            0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-      }
-
-      final AppEntry entry = getItem(position);
-      final String profile = Leaf3Settings.getProfile(
-          ProfileActivity.this, entry.packageName);
-      final String modeLabel = profile.isEmpty()
-          ? getString(R.string.use_global_default)
-          : Leaf3Settings.modeLabel(ProfileActivity.this, profile);
-      icon.setImageDrawable(entry.icon);
-      text.setText(getString(R.string.profile_row, entry.label, modeLabel));
-      return row;
-    }
   }
 
   private int dp(int value) {

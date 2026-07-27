@@ -22,7 +22,6 @@ final class Leaf3Settings {
   static final String FULL_REFRESH = "sys.leaf3.full_refresh";
   static final String IDLE_POLICY = "persist.sys.leaf3.idle_policy";
   static final String CLEANUP_POLICY = "persist.sys.leaf3.cleanup_policy";
-  static final String CONTENT_AWARE = "persist.sys.leaf3.content_aware";
   static final String SCROLL_DETECT = "persist.sys.leaf3.scroll_detect";
   static final String GRAYSCALE = "persist.sys.leaf3.grayscale";
   static final String CAPTURE_MODE_ACTIVE = "sys.leaf3.stat.capture_mode";

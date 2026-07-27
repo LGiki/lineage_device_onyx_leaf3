@@ -1,6 +1,7 @@
 package org.lineageos.leaf3controls;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.os.Bundle;
 import android.os.SystemClock;
@@ -40,11 +41,15 @@ public final class MainActivity extends Activity {
     final RadioGroup refreshModes = findViewById(R.id.refresh_modes);
     final RadioGroup idlePolicies = findViewById(R.id.idle_policies);
     final RadioGroup cleanupPolicies = findViewById(R.id.cleanup_policies);
+    final RadioGroup navigation = findViewById(R.id.navigation);
+    final View refreshPage = findViewById(R.id.page_refresh);
+    final View tuningPage = findViewById(R.id.page_tuning);
+    final View lightPage = findViewById(R.id.page_light);
+    final View statusPage = findViewById(R.id.page_status);
     final Switch frontlightEnabled = findViewById(R.id.frontlight_enabled);
     final Switch disableAnimations = findViewById(R.id.disable_animations);
     final Switch clearOnSleep = findViewById(R.id.clear_on_sleep);
     final Switch grayscale = findViewById(R.id.grayscale);
-    final Switch contentAware = findViewById(R.id.content_aware);
     final Switch scrollDetection = findViewById(R.id.scroll_detection);
     followAndroidBrightness = findViewById(R.id.follow_android_brightness);
     brightness = findViewById(R.id.brightness);
@@ -73,8 +78,6 @@ public final class MainActivity extends Activity {
     disableAnimations.setChecked(animationsDisabled());
     clearOnSleep.setChecked(SystemProperties.getInt(CLEAR_ON_SLEEP, 1) != 0);
     grayscale.setChecked(Leaf3Settings.isGrayscaleEnabled());
-    contentAware.setChecked(false);
-    contentAware.setEnabled(false);
     scrollDetection.setChecked(
         SystemProperties.getInt(Leaf3Settings.SCROLL_DETECT, 1) != 0);
     followAndroidBrightness.setChecked(brightnessOverride < 0);
@@ -86,6 +89,24 @@ public final class MainActivity extends Activity {
     updateTemperatureLabel();
     updateDiagnostics();
     loading = false;
+
+    navigation.setOnCheckedChangeListener(
+        new RadioGroup.OnCheckedChangeListener() {
+          @Override
+          public void onCheckedChanged(RadioGroup group, int checkedId) {
+            refreshPage.setVisibility(
+                checkedId == R.id.nav_refresh ? View.VISIBLE : View.GONE);
+            tuningPage.setVisibility(
+                checkedId == R.id.nav_tuning ? View.VISIBLE : View.GONE);
+            lightPage.setVisibility(
+                checkedId == R.id.nav_light ? View.VISIBLE : View.GONE);
+            statusPage.setVisibility(
+                checkedId == R.id.nav_status ? View.VISIBLE : View.GONE);
+            if (checkedId == R.id.nav_status) {
+              updateDiagnostics();
+            }
+          }
+        });
 
     refreshModes.setOnCheckedChangeListener(
         new RadioGroup.OnCheckedChangeListener() {
@@ -132,6 +153,9 @@ public final class MainActivity extends Activity {
     findViewById(R.id.per_app_profiles)
         .setOnClickListener(view ->
             startActivity(new Intent(this, ProfileActivity.class)));
+
+    findViewById(R.id.mode_specifications)
+        .setOnClickListener(view -> showModeSpecifications());
 
     findViewById(R.id.refresh_diagnostics)
         .setOnClickListener(view -> updateDiagnostics());
@@ -239,6 +263,73 @@ public final class MainActivity extends Activity {
   private void updateTemperatureLabel() {
     temperatureLabel.setText(
         getString(R.string.color_temperature, temperature.getProgress()));
+  }
+
+  private void showModeSpecifications() {
+    final View content = getLayoutInflater().inflate(
+        R.layout.dialog_mode_specifications, null);
+    final RadioGroup modes = content.findViewById(R.id.specification_modes);
+    final TextView details =
+        content.findViewById(R.id.specification_details);
+    final String currentMode = SystemProperties.get(
+        Leaf3Settings.GLOBAL_REFRESH_MODE, Leaf3Settings.MODE_BALANCED);
+
+    details.setText(getText(specificationForMode(currentMode)));
+    selectSpecificationMode(modes, currentMode);
+    modes.setOnCheckedChangeListener((group, checkedId) ->
+        details.setText(getText(specificationForId(checkedId))));
+
+    new AlertDialog.Builder(this)
+        .setTitle(R.string.mode_specifications)
+        .setView(content)
+        .setPositiveButton(android.R.string.ok, null)
+        .show();
+  }
+
+  private static int specificationForId(int checkedId) {
+    if (checkedId == R.id.spec_normal) {
+      return R.string.specification_normal;
+    }
+    if (checkedId == R.id.spec_speed) {
+      return R.string.specification_speed;
+    }
+    if (checkedId == R.id.spec_a2) {
+      return R.string.specification_a2;
+    }
+    if (checkedId == R.id.spec_regal) {
+      return R.string.specification_regal;
+    }
+    return R.string.specification_balanced;
+  }
+
+  private static int specificationForMode(String mode) {
+    if (Leaf3Settings.MODE_NORMAL.equals(mode)) {
+      return R.string.specification_normal;
+    }
+    if (Leaf3Settings.MODE_SPEED.equals(mode)) {
+      return R.string.specification_speed;
+    }
+    if (Leaf3Settings.MODE_A2.equals(mode)) {
+      return R.string.specification_a2;
+    }
+    if (Leaf3Settings.MODE_REGAL.equals(mode)) {
+      return R.string.specification_regal;
+    }
+    return R.string.specification_balanced;
+  }
+
+  private static void selectSpecificationMode(RadioGroup group, String mode) {
+    if (Leaf3Settings.MODE_NORMAL.equals(mode)) {
+      group.check(R.id.spec_normal);
+    } else if (Leaf3Settings.MODE_SPEED.equals(mode)) {
+      group.check(R.id.spec_speed);
+    } else if (Leaf3Settings.MODE_A2.equals(mode)) {
+      group.check(R.id.spec_a2);
+    } else if (Leaf3Settings.MODE_REGAL.equals(mode)) {
+      group.check(R.id.spec_regal);
+    } else {
+      group.check(R.id.spec_balanced);
+    }
   }
 
   private void setProperty(String name, String value) {
