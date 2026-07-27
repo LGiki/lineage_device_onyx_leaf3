@@ -2591,10 +2591,10 @@ int main() {
               // made mixed or sparse damage drive large quality passes and,
               // followed by cleanup, could overload the vendor EBC stack.
               waveform = kWaveformAuto;
-            } else if (input_probe_frames > 0) {
-              waveform = kWaveformAnim;
-              fast = true;
             }
+            // A touch probe only wakes capture; it is not evidence of motion.
+            // Keep taps, dialogs and other static UI on AUTO unless the
+            // gesture or row-hash detectors positively identify scrolling.
             break;
           }
 

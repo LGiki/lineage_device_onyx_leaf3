@@ -13,7 +13,7 @@
     <string name="speed">Speed</string>
     <string name="a2">A2</string>
     <string name="regal">Regal</string>
-    <string name="balanced_explanation"><b>Balanced — Recommended</b>\nFast while touching or scrolling; sharper when the page is still.</string>
+    <string name="balanced_explanation"><b>Balanced — Recommended</b>\nFast while scrolling; sharper for taps, dialogs, and still pages.</string>
     <string name="normal_explanation"><b>Normal — Clear grayscale</b>\nSharp text and images with moderate response and little ghosting.</string>
     <string name="speed_explanation"><b>Speed — Fast text</b>\nQuick page turns using fewer shades; some trails may remain.</string>
     <string name="a2_explanation"><b>A2 — Fastest motion</b>\nBest for rapid scrolling; lowest detail and the most ghosting.</string>
@@ -24,7 +24,7 @@
     <string name="mode_specifications">Refresh mode specifications</string>
     <string name="mode_specifications_short">Mode specs</string>
     <string name="mode_specifications_intro">Technical values below match the current Leaf3 EBC bridge implementation. Waveform numbers are vendor EBC IDs.</string>
-    <string name="specification_balanced"><b>BALANCED / ADAPTIVE</b>\nWaveform: AUTO (5) when still; ANIM (4) during touch probes or scrolling\nCapture target: 100 ms / 10 Hz\nTone handling: grayscale with dithering\nCleanup: regional GC16 after any fast update\nPurpose: automatically trade quality for responsiveness</string>
+    <string name="specification_balanced"><b>BALANCED / ADAPTIVE</b>\nWaveform: AUTO (5) for taps and still content; ANIM (4) only while scrolling\nCapture target: 100 ms / 10 Hz\nTone handling: grayscale with dithering\nCleanup: regional GC16 after scrolling stops\nPurpose: preserve UI quality while keeping scrolling responsive</string>
     <string name="specification_normal"><b>NORMAL / AUTO</b>\nWaveform: AUTO (5)\nCapture target: 140 ms / about 7 Hz\nTone handling: grayscale with dithering\nCleanup: normally unnecessary; required if scrolling switches to ANIM\nPurpose: stable general grayscale rendering</string>
     <string name="specification_speed"><b>SPEED / DU</b>\nWaveform: DU (1)\nCapture target: 80 ms; EBC submission remains capped at 10 Hz\nTone handling: fast, reduced grayscale fidelity\nCleanup: regional GC16 after the screen becomes quiet\nPurpose: quick text and page movement</string>
     <string name="specification_a2"><b>A2 / ANIMATION</b>\nWaveform: ANIM (4)\nCapture target: 80 ms; EBC submission remains capped at 10 Hz\nTone handling: lowest detail, strongest residual ghosting\nCleanup: regional GC16 after the screen becomes quiet\nPurpose: maximum motion responsiveness</string>
