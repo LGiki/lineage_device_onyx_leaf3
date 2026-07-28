@@ -117,6 +117,7 @@ public final class Leaf3StateService extends Service {
       Log.w(TAG, "Could not unregister task-stack listener", exception);
     }
     clearActiveRefreshMode();
+    SystemProperties.set(Leaf3Settings.ACTIVE_PACKAGE, "");
     super.onDestroy();
   }
 
@@ -191,6 +192,10 @@ public final class Leaf3StateService extends Service {
       foregroundPackage = packageName;
       temporaryPackage = "";
       temporaryMode = "";
+      SystemProperties.set(
+          Leaf3Settings.ACTIVE_PACKAGE,
+          foregroundPackage.isEmpty()
+              ? "" : Integer.toHexString(foregroundPackage.hashCode()));
     }
     applyRefreshMode();
   }

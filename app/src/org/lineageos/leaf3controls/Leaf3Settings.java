@@ -19,10 +19,17 @@ final class Leaf3Settings {
       "sys.leaf3.active_refresh_mode";
   static final String ACTIVE_REFRESH_SOURCE =
       "sys.leaf3.active_refresh_source";
+  static final String ACTIVE_PACKAGE = "sys.leaf3.active_package";
   static final String FULL_REFRESH = "sys.leaf3.full_refresh";
   static final String IDLE_POLICY = "persist.sys.leaf3.idle_policy";
   static final String CLEANUP_POLICY = "persist.sys.leaf3.cleanup_policy";
   static final String SCROLL_DETECT = "persist.sys.leaf3.scroll_detect";
+  static final String PAGE_INTERVAL = "persist.sys.leaf3.page_interval";
+  static final String SETTLED_QUALITY =
+      "persist.sys.leaf3.settle_quality";
+  static final String CONTRAST = "persist.sys.leaf3.contrast";
+  static final String GAMMA = "persist.sys.leaf3.gamma";
+  static final String DITHER = "persist.sys.leaf3.dither";
   static final String GRAYSCALE = "persist.sys.leaf3.grayscale";
   static final String CAPTURE_MODE_ACTIVE = "sys.leaf3.stat.capture_mode";
 
@@ -34,11 +41,12 @@ final class Leaf3Settings {
   static final String MODE_SPEED = "speed";
   static final String MODE_A2 = "a2";
   static final String MODE_REGAL = "regal";
+  static final String MODE_READER = "reader";
 
   private static final String PROFILE_PREFERENCES = "refresh_profiles";
   private static final Set<String> VALID_MODES =
       new HashSet<>(Arrays.asList(MODE_BALANCED, MODE_NORMAL, MODE_SPEED,
-                                  MODE_A2, MODE_REGAL));
+                                  MODE_A2, MODE_REGAL, MODE_READER));
 
   private Leaf3Settings() {}
 
@@ -107,6 +115,9 @@ final class Leaf3Settings {
     if (MODE_REGAL.equals(mode)) {
       return context.getString(R.string.regal);
     }
+    if (MODE_READER.equals(mode)) {
+      return context.getString(R.string.reader);
+    }
     return context.getString(R.string.balanced);
   }
 
@@ -122,6 +133,9 @@ final class Leaf3Settings {
     }
     if (MODE_A2.equals(mode)) {
       return MODE_REGAL;
+    }
+    if (MODE_REGAL.equals(mode)) {
+      return MODE_READER;
     }
     return MODE_BALANCED;
   }

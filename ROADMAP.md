@@ -19,6 +19,17 @@ following safe optimizations are already present:
   updates only for sufficiently large scrolling regions.
 - Per-tile fast-update aging and bounded regional GC16 cleanup after the
   display becomes quiet.
+- Pre-capture EBC pacing, so compositor notifications coalesce to the newest
+  frame while the driver interval is busy instead of queueing a stale
+  screenshot.
+- A stock-inspired Reader profile with DU page turns, independent ANIM
+  scrolling, and configurable GC16 intervals of 1, 3, 5, 10, 30, 50 pages or
+  never.
+- An optional settled Regal pass: large page changes appear first through AUTO
+  and receive REGAL only after 180 ms of compositor quiet.
+- Bridge-side grayscale tone controls for contrast, gamma, and EBC dithering.
+- Latency telemetry for the pacing gate, notification-to-capture,
+  notification-to-submit, and the EBC ioctl itself.
 - Blocking display-off waits and property-value caching.
 - Disabled wallpaper, doze/AOD drawing, automatic brightness, touch ripples,
   edge glow, and navigation-bar scrims.
@@ -38,6 +49,8 @@ quarantined because both caused crashes under composition or scrolling load.
 | 3 | Planned | Add conservative automatic application profiles | Low |
 | 4 | Planned | Make grayscale the default for new installations | Low |
 | 5 | Validation | Add per-tile update-aged regional ghost cleanup | Medium |
+| 5A | Implemented, hardware validation required | Coalesce to the newest frame before EBC submission | Low to medium |
+| 5B | Implemented, hardware validation required | Port stock reader refresh policy and tone controls | Low to medium |
 | 6 | Research | Port the stock composer-native EPDC protocol | High |
 | 7 | Research | Expose stock-style per-surface E-Ink controls | High |
 
@@ -119,6 +132,57 @@ Automatic ghost management must never request a full-screen cleanup. Manual
 cleanup policy must continue to disable automatic cleanup, and every cleanup
 must obey the global EBC ioctl interval.
 
+### Phase 5A: Latest-frame scheduling
+
+The EBC safety interval is now observed before a notified screenshot is
+captured. While the interval is busy, SurfaceFlinger continues accumulating
+damage and the notifier collapses additional commits. The bridge therefore
+captures the newest available composition at the deadline instead of sleeping
+with an older screenshot already staged.
+
+The ioctl path retains its own final spacing check as a safety backstop for
+manual, cleanup, suspend, and polling submissions. New statistics separate
+time spent at the EBC gate from capture, comparison, submission, and ioctl
+time.
+
+Hardware validation must establish:
+
+- Page-turn bursts increase the dropped/coalesced notification count without
+  displaying intermediate pages.
+- No EBC ioctl is issued less than 100 ms after the previous one.
+- Notification-to-submit latency improves without notifier-health regressions.
+- Manual cleanup, tone changes, screen-off clearing, and polling fallback
+  continue to work.
+
+### Phase 5B: Stock reader and image policy
+
+The stock reader uses a persistent fast application scope and performs a
+quality cleanup only after a user-selected number of page changes. The bridge
+now reproduces that policy without private framework APIs:
+
+- `Reader` is an explicit global and per-app profile.
+- Large static Reader changes use DU; page counting is separate from
+  touch-slop/row-hash scrolling, which still uses ANIM.
+- The foreground-package token resets the page counter when switching between
+  reader applications, even when both apps use the same Reader profile.
+- The cleanup interval accepts the stock choices 1, 3, 5, 10, 30, 50, and
+  disabled. A due cleanup applies regional GC16 to the new page and resets the
+  counter. Reader page turns do not arm the ordinary quiet-time cleanup.
+  Manual cleanup remains authoritative and disables the page counter too.
+- Large Regal changes use AUTO for the immediately visible frame and,
+  optionally, one REGAL pass after 180 ms without a replacement frame.
+- Contrast and gamma use a cached 256-entry luminance table while staging
+  changed EBC rows. Default values preserve the prior memcpy path. Dithering
+  remains a separately configurable EBC update flag.
+
+These controls are available in Leaf3 Controls and `leaf3-refresh`. Tone
+changes request one non-flashing AUTO redraw of the accumulated frame.
+
+Hardware validation must compare Reader against Speed and Regal using text,
+mixed text/images, PDF pages, physical page keys, touch page turns, continuous
+scrolling, and rapid multi-page navigation. Test every cleanup interval,
+contrast/gamma extremes, and dithering both enabled and disabled.
+
 ### Phase 6: Stock composer-native EPDC protocol
 
 Reverse engineer and implement the ONYX `CommitEpdc` command used between
@@ -162,7 +226,10 @@ Complete each phase as a separate focused change, then:
 6. Inspect all logcat buffers and the kernel log for crashes, EBC failures,
    SurfaceFlinger failures, and SELinux denials.
 7. Compare capture count, comparison time, updated area, cleanup count, and
-   minimum submit spacing against the previous phase.
+   minimum submit spacing against the previous phase. For phases 5A and later,
+   also compare EBC-gate wait, notification-to-capture,
+   notification-to-submit, ioctl time, page-turn count, interval cleanups, and
+   settled-Regal updates.
 
 Do not begin the next phase until the current phase passes this gate on real
 hardware.

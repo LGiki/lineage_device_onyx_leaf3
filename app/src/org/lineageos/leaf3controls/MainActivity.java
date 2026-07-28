@@ -8,14 +8,17 @@ import android.os.SystemClock;
 import android.os.SystemProperties;
 import android.provider.Settings;
 import android.view.View;
+import android.widget.AdapterView;
 import android.widget.CompoundButton;
 import android.widget.RadioGroup;
 import android.widget.SeekBar;
+import android.widget.Spinner;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
 public final class MainActivity extends Activity {
+  private static final int[] PAGE_INTERVALS = {1, 3, 5, 10, 30, 50, 0};
   private static final String CLEAR_ON_SLEEP =
       "persist.sys.leaf3.clear_on_sleep";
   private static final String FRONTLIGHT_ENABLED =
@@ -31,6 +34,8 @@ public final class MainActivity extends Activity {
   private Switch followAndroidBrightness;
   private TextView brightnessLabel;
   private TextView temperatureLabel;
+  private TextView contrastLabel;
+  private TextView gammaLabel;
   private TextView diagnostics;
 
   @Override
@@ -51,11 +56,18 @@ public final class MainActivity extends Activity {
     final Switch clearOnSleep = findViewById(R.id.clear_on_sleep);
     final Switch grayscale = findViewById(R.id.grayscale);
     final Switch scrollDetection = findViewById(R.id.scroll_detection);
+    final Switch settledQuality = findViewById(R.id.settled_quality);
+    final Switch dither = findViewById(R.id.dither);
+    final Spinner pageInterval = findViewById(R.id.page_interval);
+    final SeekBar contrast = findViewById(R.id.contrast);
+    final SeekBar gamma = findViewById(R.id.gamma);
     followAndroidBrightness = findViewById(R.id.follow_android_brightness);
     brightness = findViewById(R.id.brightness);
     temperature = findViewById(R.id.temperature);
     brightnessLabel = findViewById(R.id.brightness_label);
     temperatureLabel = findViewById(R.id.temperature_label);
+    contrastLabel = findViewById(R.id.contrast_label);
+    gammaLabel = findViewById(R.id.gamma_label);
     diagnostics = findViewById(R.id.diagnostics);
 
     selectRefreshMode(refreshModes,
@@ -80,6 +92,15 @@ public final class MainActivity extends Activity {
     grayscale.setChecked(Leaf3Settings.isGrayscaleEnabled());
     scrollDetection.setChecked(
         SystemProperties.getInt(Leaf3Settings.SCROLL_DETECT, 1) != 0);
+    settledQuality.setChecked(
+        SystemProperties.getInt(Leaf3Settings.SETTLED_QUALITY, 1) != 0);
+    dither.setChecked(SystemProperties.getInt(Leaf3Settings.DITHER, 1) != 0);
+    pageInterval.setSelection(pageIntervalIndex(
+        SystemProperties.getInt(Leaf3Settings.PAGE_INTERVAL, 10)));
+    contrast.setProgress(
+        clamp(SystemProperties.getInt(Leaf3Settings.CONTRAST, 0) + 50));
+    gamma.setProgress(
+        clampGamma(SystemProperties.getInt(Leaf3Settings.GAMMA, 100)) - 50);
     followAndroidBrightness.setChecked(brightnessOverride < 0);
     brightness.setProgress(brightnessOverride < 0 ? 50 : brightnessOverride);
     brightness.setEnabled(brightnessOverride >= 0);
@@ -87,8 +108,9 @@ public final class MainActivity extends Activity {
         clamp(SystemProperties.getInt(FRONTLIGHT_TEMPERATURE, 0)));
     updateBrightnessLabel();
     updateTemperatureLabel();
+    updateContrastLabel(contrast.getProgress() - 50);
+    updateGammaLabel(gamma.getProgress() + 50);
     updateDiagnostics();
-    loading = false;
 
     navigation.setOnCheckedChangeListener(
         new RadioGroup.OnCheckedChangeListener() {
@@ -211,6 +233,70 @@ public final class MainActivity extends Activity {
           }
         });
 
+    settledQuality.setOnCheckedChangeListener(
+        new CompoundButton.OnCheckedChangeListener() {
+          @Override
+          public void onCheckedChanged(CompoundButton button, boolean checked) {
+            if (!loading) {
+              setProperty(Leaf3Settings.SETTLED_QUALITY, checked ? "1" : "0");
+            }
+          }
+        });
+
+    dither.setOnCheckedChangeListener(
+        new CompoundButton.OnCheckedChangeListener() {
+          @Override
+          public void onCheckedChanged(CompoundButton button, boolean checked) {
+            if (!loading) {
+              setProperty(Leaf3Settings.DITHER, checked ? "1" : "0");
+            }
+          }
+        });
+
+    pageInterval.setOnItemSelectedListener(
+        new AdapterView.OnItemSelectedListener() {
+          @Override
+          public void onItemSelected(AdapterView<?> parent, View view,
+                                     int position, long id) {
+            if (!loading && position >= 0 &&
+                position < PAGE_INTERVALS.length) {
+              setProperty(Leaf3Settings.PAGE_INTERVAL,
+                          Integer.toString(PAGE_INTERVALS[position]));
+            }
+          }
+
+          @Override
+          public void onNothingSelected(AdapterView<?> parent) {}
+        });
+
+    contrast.setOnSeekBarChangeListener(new SimpleSeekBarListener() {
+      @Override
+      public void onProgressChanged(SeekBar seekBar, int progress,
+                                    boolean fromUser) {
+        updateContrastLabel(progress - 50);
+      }
+
+      @Override
+      public void onStopTrackingTouch(SeekBar seekBar) {
+        setProperty(Leaf3Settings.CONTRAST,
+                    Integer.toString(seekBar.getProgress() - 50));
+      }
+    });
+
+    gamma.setOnSeekBarChangeListener(new SimpleSeekBarListener() {
+      @Override
+      public void onProgressChanged(SeekBar seekBar, int progress,
+                                    boolean fromUser) {
+        updateGammaLabel(progress + 50);
+      }
+
+      @Override
+      public void onStopTrackingTouch(SeekBar seekBar) {
+        setProperty(Leaf3Settings.GAMMA,
+                    Integer.toString(seekBar.getProgress() + 50));
+      }
+    });
+
     followAndroidBrightness.setOnCheckedChangeListener(
         new CompoundButton.OnCheckedChangeListener() {
           @Override
@@ -245,6 +331,7 @@ public final class MainActivity extends Activity {
         }
       }
     });
+    loading = false;
   }
 
   @Override
@@ -263,6 +350,14 @@ public final class MainActivity extends Activity {
   private void updateTemperatureLabel() {
     temperatureLabel.setText(
         getString(R.string.color_temperature, temperature.getProgress()));
+  }
+
+  private void updateContrastLabel(int value) {
+    contrastLabel.setText(getString(R.string.contrast_value, value));
+  }
+
+  private void updateGammaLabel(int value) {
+    gammaLabel.setText(getString(R.string.gamma_value, value));
   }
 
   private void showModeSpecifications() {
@@ -299,6 +394,9 @@ public final class MainActivity extends Activity {
     if (checkedId == R.id.spec_regal) {
       return R.string.specification_regal;
     }
+    if (checkedId == R.id.spec_reader) {
+      return R.string.specification_reader;
+    }
     return R.string.specification_balanced;
   }
 
@@ -315,6 +413,9 @@ public final class MainActivity extends Activity {
     if (Leaf3Settings.MODE_REGAL.equals(mode)) {
       return R.string.specification_regal;
     }
+    if (Leaf3Settings.MODE_READER.equals(mode)) {
+      return R.string.specification_reader;
+    }
     return R.string.specification_balanced;
   }
 
@@ -327,6 +428,8 @@ public final class MainActivity extends Activity {
       group.check(R.id.spec_a2);
     } else if (Leaf3Settings.MODE_REGAL.equals(mode)) {
       group.check(R.id.spec_regal);
+    } else if (Leaf3Settings.MODE_READER.equals(mode)) {
+      group.check(R.id.spec_reader);
     } else {
       group.check(R.id.spec_balanced);
     }
@@ -379,6 +482,19 @@ public final class MainActivity extends Activity {
     return Math.max(0, Math.min(100, value));
   }
 
+  private static int clampGamma(int value) {
+    return Math.max(50, Math.min(200, value));
+  }
+
+  private static int pageIntervalIndex(int interval) {
+    for (int index = 0; index < PAGE_INTERVALS.length; ++index) {
+      if (PAGE_INTERVALS[index] == interval) {
+        return index;
+      }
+    }
+    return 3;
+  }
+
   private static String refreshModeForId(int checkedId) {
     if (checkedId == R.id.mode_normal) {
       return "normal";
@@ -391,6 +507,9 @@ public final class MainActivity extends Activity {
     }
     if (checkedId == R.id.mode_regal) {
       return "regal";
+    }
+    if (checkedId == R.id.mode_reader) {
+      return "reader";
     }
     return "balanced";
   }
@@ -424,6 +543,8 @@ public final class MainActivity extends Activity {
       group.check(R.id.mode_a2);
     } else if ("regal".equals(mode)) {
       group.check(R.id.mode_regal);
+    } else if ("reader".equals(mode)) {
+      group.check(R.id.mode_reader);
     } else {
       group.check(R.id.mode_balanced);
     }
@@ -475,7 +596,24 @@ public final class MainActivity extends Activity {
     final long captureTime = getStat("capture_us");
     final long compareTime = getStat("compare_us");
     final long submitTime = getStat("submit_us");
+    final long ioctlTime = getStat("ioctl_us");
+    final long gateWaitTime = getStat("gate_wait_us");
+    final long notifyCaptureTime = getStat("notify_capture_us");
+    final long notifySubmitTime = getStat("notify_submit_us");
+    final long notifiedCaptures = getStat("notified_captures");
+    final long notifiedSubmits = getStat("notified_submits");
+    final long pageTurns = getStat("page_turns");
+    final long pageCleanups = getStat("page_cleanups");
+    final long settledUpdates = getStat("settled");
     final long updates = partial + full;
+    final int pageInterval =
+        SystemProperties.getInt(Leaf3Settings.PAGE_INTERVAL, 10);
+    final int contrast =
+        SystemProperties.getInt(Leaf3Settings.CONTRAST, 0);
+    final int gamma = clampGamma(
+        SystemProperties.getInt(Leaf3Settings.GAMMA, 100));
+    final boolean dither =
+        SystemProperties.getInt(Leaf3Settings.DITHER, 1) != 0;
 
     diagnostics.setText(getString(
         R.string.diagnostics_value,
@@ -484,6 +622,10 @@ public final class MainActivity extends Activity {
         captureMode,
         SystemProperties.get(Leaf3Settings.IDLE_POLICY, "balanced"),
         SystemProperties.get(Leaf3Settings.CLEANUP_POLICY, "balanced"),
+        pageInterval == 0 ? "off" : Integer.toString(pageInterval),
+        contrast,
+        gamma,
+        dither ? "on" : "off",
         captures,
         changed,
         dropped,
@@ -494,10 +636,17 @@ public final class MainActivity extends Activity {
         full,
         split,
         bilevel,
+        pageTurns,
+        pageCleanups,
+        settledUpdates,
         pixels,
         averageMicros(captureTime, captures),
         averageMicros(compareTime, comparisons),
-        averageMicros(submitTime, updates)));
+        averageMicros(submitTime, updates),
+        averageMicros(ioctlTime, updates),
+        averageMicros(gateWaitTime, updates),
+        averageMicros(notifyCaptureTime, notifiedCaptures),
+        averageMicros(notifySubmitTime, notifiedSubmits)));
   }
 
   private static long getStat(String name) {

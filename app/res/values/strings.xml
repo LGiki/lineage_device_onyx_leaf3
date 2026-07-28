@@ -13,11 +13,13 @@
     <string name="speed">Speed</string>
     <string name="a2">A2</string>
     <string name="regal">Regal</string>
+    <string name="reader">Reader</string>
     <string name="balanced_explanation"><b>Balanced — Recommended</b>\nFast while scrolling; sharper for taps, dialogs, and still pages.</string>
     <string name="normal_explanation"><b>Normal — Clear grayscale</b>\nSharp text and images with moderate response and little ghosting.</string>
     <string name="speed_explanation"><b>Speed — Fast text</b>\nQuick page turns using fewer shades; some trails may remain.</string>
     <string name="a2_explanation"><b>A2 — Fastest motion</b>\nBest for rapid scrolling; lowest detail and the most ghosting.</string>
     <string name="regal_explanation"><b>Regal — Cleanest page</b>\nReduces ghosting on static reading pages; responds more slowly.</string>
+    <string name="reader_explanation"><b>Reader — Fast page turns</b>\nUses DU for pages and performs GC16 only at the selected page interval.</string>
     <string name="full_refresh">Clean screen now</string>
     <string name="per_app_profiles">Per-app refresh profiles</string>
     <string name="per_app_profiles_short">App profiles</string>
@@ -29,7 +31,8 @@
     <string name="specification_speed"><b>SPEED / DU</b>\nWaveform: DU (1)\nCapture target: 80 ms; EBC submission remains capped at 10 Hz\nTone handling: fast, reduced grayscale fidelity\nCleanup: regional GC16 after the screen becomes quiet\nPurpose: quick text and page movement</string>
     <string name="specification_a2"><b>A2 / ANIMATION</b>\nWaveform: ANIM (4)\nCapture target: 80 ms; EBC submission remains capped at 10 Hz\nTone handling: lowest detail, strongest residual ghosting\nCleanup: regional GC16 after the screen becomes quiet\nPurpose: maximum motion responsiveness</string>
     <string name="specification_regal"><b>REGAL / ANTI-GHOST</b>\nWaveform: REGAL (6)\nCapture target: 140 ms / about 7 Hz\nTone handling: grayscale with dithering and cleaner residuals\nCleanup: normally unnecessary; required if scrolling switches to ANIM\nPurpose: high-quality static reading pages</string>
-    <string name="mode_specifications_shared"><b>Shared rules</b>\n• Scroll detection overrides every mode with ANIM (4) while motion is active.\n• “Clean screen now” submits a full-panel GC16 (2).\n• EBC submissions are at least 100 ms apart, so the hardware limit is 10 updates/s.\n• Regional cleanup waits for 300 ms (Quality) or 600 ms (Balanced) of quiet; Manual disables it.</string>
+    <string name="specification_reader"><b>READER / PAGE-TURN</b>\nWaveform: DU (1) for page turns; GC16 (2) at the selected interval\nCapture target: newest frame at the 100 ms EBC deadline\nScrolling: ANIM (4), independently of page counting\nPurpose: low-latency reading without cleaning after every page</string>
+    <string name="mode_specifications_shared"><b>Shared rules</b>\n• Scroll detection overrides every mode with ANIM (4) while motion is active.\n• Large Regal changes use AUTO first and a settled REGAL pass after 180 ms of quiet.\n• “Clean screen now” submits a full-panel GC16 (2).\n• EBC submissions are at least 100 ms apart; pending notifications coalesce before capture.\n• Regional cleanup waits for 300 ms (Quality) or 600 ms (Balanced) of quiet; Reader uses its page interval instead.</string>
     <string name="profile_description">Tap an app to override the global refresh mode. Leave apps on the default unless they need a different quality or speed trade-off.</string>
     <string name="use_global_default">Use global default</string>
     <string name="use_global_default_explanation"><b>Use global default</b>\nFollow the mode selected on the Refresh page.</string>
@@ -45,10 +48,24 @@
     <string name="idle_balanced_short">Balanced\n2 sec</string>
     <string name="idle_battery_short">Battery\n5 sec</string>
     <string name="ghost_cleanup">Ghost cleanup</string>
-    <string name="cleanup_description_detailed">Quality cleans sooner; Manual waits for “Clean screen now.”</string>
+    <string name="cleanup_description_detailed">Quality cleans sooner; Manual disables regional and Reader interval cleanup until “Clean screen now.”</string>
     <string name="cleanup_quality_short">Quality\n0.3 sec</string>
     <string name="cleanup_balanced_short">Balanced\n0.6 sec</string>
     <string name="cleanup_manual_short">Manual\nOff</string>
+    <string name="reader_tuning">Reader and image quality</string>
+    <string name="settled_quality">Settled Regal quality pass</string>
+    <string name="dither">Dither grayscale updates</string>
+    <string name="contrast_value">Contrast: %1$d</string>
+    <string name="gamma_value">Gamma: %1$d%%</string>
+    <string-array name="page_interval_labels">
+        <item>Clean every page</item>
+        <item>Clean every 3 pages</item>
+        <item>Clean every 5 pages</item>
+        <item>Clean every 10 pages</item>
+        <item>Clean every 30 pages</item>
+        <item>Clean every 50 pages</item>
+        <item>Never clean automatically</item>
+    </string-array>
     <string name="disable_animations">Disable Android animations (recommended)</string>
     <string name="clear_on_sleep">Clear retained page while sleeping</string>
     <string name="grayscale">Global grayscale UI</string>
@@ -65,7 +82,7 @@
     <string name="diagnostics">Bridge diagnostics</string>
     <string name="diagnostics_description">Live bridge state and performance counters. Values update when this page opens or when you press refresh.</string>
     <string name="refresh_diagnostics">Refresh diagnostics</string>
-    <string name="diagnostics_value">Effective mode: %1$s (%2$s)\nCapture source: %3$s\nIdle fallback: %4$s; cleanup: %5$s\nFrames: %6$d captured, %7$d changed, %8$d dropped, %9$d scrolling (%10$d gesture, %11$d row hash)\nUpdates: %12$d partial, %13$d full, %14$d split batches, %15$d bi-level\nUpdated pixels: %16$d\nAverage time: capture %17$d µs, compare %18$d µs, submit %19$d µs</string>
+    <string name="diagnostics_value">Effective mode: %1$s (%2$s)\nCapture source: %3$s\nIdle fallback: %4$s; cleanup: %5$s\nReader interval: %6$s; tone: contrast %7$d, gamma %8$d%%, dither %9$s\nFrames: %10$d captured, %11$d changed, %12$d dropped, %13$d scrolling (%14$d gesture, %15$d row hash)\nUpdates: %16$d partial, %17$d full, %18$d split, %19$d bi-level\nPages: %20$d turns, %21$d interval cleanups, %22$d settled Regal\nUpdated pixels: %23$d\nAverage: capture %24$d µs, compare %25$d µs, submit %26$d µs, ioctl %27$d µs\nLatency: EBC gate %28$d µs/update; notify→capture %29$d µs; notify→submit %30$d µs</string>
     <string name="refresh_tile">Refresh mode</string>
     <string name="refresh_tile_label">Refresh: %1$s</string>
     <string name="clean_tile_label">Clean screen</string>

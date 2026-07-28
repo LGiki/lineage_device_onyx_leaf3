@@ -31,6 +31,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -156,9 +157,15 @@ constexpr int32_t kLeaf3FrameNotifierTakeDamage = 2;
 // fling stays fast, and allow row hashes to extend an established fling.
 constexpr int64_t kScrollGestureWindowUs = 500000;
 constexpr int64_t kScrollFlingWindowUs = 1500000;
+// Stock reader mode keeps page turns fast and cleans only after a selected
+// number of pages. Regal mode first exposes the newly composed page through
+// AUTO, then applies its quality waveform after the page has remained still.
+constexpr int64_t kSettledPageDelayUs = 180000;
+constexpr uint64_t kPageTurnMinimumAreaDenominator = 3;
 
 constexpr char kRefreshModeProperty[] = "persist.sys.leaf3.refresh_mode";
 constexpr char kActiveRefreshModeProperty[] = "sys.leaf3.active_refresh_mode";
+constexpr char kActivePackageProperty[] = "sys.leaf3.active_package";
 constexpr char kFullRefreshProperty[] = "sys.leaf3.full_refresh";
 constexpr char kClearOnSleepProperty[] = "persist.sys.leaf3.clear_on_sleep";
 constexpr char kIdlePolicyProperty[] = "persist.sys.leaf3.idle_policy";
@@ -166,6 +173,11 @@ constexpr char kCleanupPolicyProperty[] = "persist.sys.leaf3.cleanup_policy";
 constexpr char kContentAwareProperty[] = "persist.sys.leaf3.content_aware";
 constexpr char kScrollDetectProperty[] = "persist.sys.leaf3.scroll_detect";
 constexpr char kCaptureModeProperty[] = "persist.sys.leaf3.capture_mode";
+constexpr char kPageIntervalProperty[] = "persist.sys.leaf3.page_interval";
+constexpr char kSettledQualityProperty[] = "persist.sys.leaf3.settle_quality";
+constexpr char kContrastProperty[] = "persist.sys.leaf3.contrast";
+constexpr char kGammaProperty[] = "persist.sys.leaf3.gamma";
+constexpr char kDitherProperty[] = "persist.sys.leaf3.dither";
 constexpr char kTouchInputName[] = "cyttsp5_mt";
 
 // Damage is tracked on a tile grid. 32 pixels keeps every rectangle edge
@@ -231,6 +243,7 @@ enum class RefreshMode {
   kSpeed,
   kA2,
   kRegal,
+  kReader,
 };
 
 enum class IdlePolicy {
@@ -261,6 +274,11 @@ struct Settings {
   CleanupPolicy cleanup = CleanupPolicy::kBalanced;
   bool content_aware = false;
   bool scroll_detect = true;
+  int page_interval = 10;
+  bool settled_quality = true;
+  int contrast = 0;
+  int gamma = 100;
+  bool dither = true;
   bool clear_on_sleep = true;
   bool interactive = true;
   CaptureMode capture_mode = CaptureMode::kNotify;
@@ -268,6 +286,7 @@ struct Settings {
   int android_brightness = 128;
   int frontlight_override = -1;
   int frontlight_temperature = 0;
+  std::string foreground_token;
   std::string full_refresh_token;
 };
 
@@ -287,9 +306,18 @@ struct BridgeStats {
   uint64_t gesture_scroll_frames = 0;
   uint64_t hash_scroll_frames = 0;
   uint64_t cleanup_updates = 0;
+  uint64_t page_turns = 0;
+  uint64_t page_cleanups = 0;
+  uint64_t settled_updates = 0;
   uint64_t capture_time_us = 0;
   uint64_t compare_time_us = 0;
   uint64_t submit_time_us = 0;
+  uint64_t ioctl_time_us = 0;
+  uint64_t gate_wait_time_us = 0;
+  uint64_t notification_to_capture_us = 0;
+  uint64_t notification_to_submit_us = 0;
+  uint64_t notified_captures = 0;
+  uint64_t notified_submits = 0;
   int64_t last_publish_us = 0;
 };
 
@@ -303,6 +331,8 @@ const char *refreshModeName(RefreshMode mode) {
     return "a2";
   case RefreshMode::kRegal:
     return "regal";
+  case RefreshMode::kReader:
+    return "reader";
   case RefreshMode::kBalanced:
   default:
     return "balanced";
@@ -419,11 +449,17 @@ public:
   const Settings &read() {
     bool changed = !initialized_;
     const char *active_mode = read(active_mode_, &changed);
+    const char *active_package = read(active_package_, &changed);
     const char *global_mode = read(global_mode_, &changed);
     const char *idle = read(idle_, &changed);
     const char *cleanup = read(cleanup_, &changed);
     const char *content_aware = read(content_aware_, &changed);
     const char *scroll_detect = read(scroll_detect_, &changed);
+    const char *page_interval = read(page_interval_, &changed);
+    const char *settled_quality = read(settled_quality_, &changed);
+    const char *contrast = read(contrast_, &changed);
+    const char *gamma = read(gamma_, &changed);
+    const char *dither = read(dither_, &changed);
     const char *clear_on_sleep = read(clear_on_sleep_, &changed);
     const char *interactive = read(interactive_, &changed);
     const char *capture_mode = read(capture_mode_, &changed);
@@ -450,6 +486,8 @@ public:
       settings_.mode = RefreshMode::kA2;
     } else if (mode == "regal") {
       settings_.mode = RefreshMode::kRegal;
+    } else if (mode == "reader") {
+      settings_.mode = RefreshMode::kReader;
     } else {
       settings_.mode = RefreshMode::kBalanced;
     }
@@ -478,6 +516,19 @@ public:
     (void)content_aware;
     settings_.content_aware = false;
     settings_.scroll_detect = parseInteger(scroll_detect, 1) != 0;
+    const int requested_page_interval = parseInteger(page_interval, 10);
+    const int supported_page_intervals[] = {0, 1, 3, 5, 10, 30, 50};
+    settings_.page_interval = 10;
+    for (const int supported : supported_page_intervals) {
+      if (requested_page_interval == supported) {
+        settings_.page_interval = supported;
+        break;
+      }
+    }
+    settings_.settled_quality = parseInteger(settled_quality, 1) != 0;
+    settings_.contrast = std::clamp(parseInteger(contrast, 0), -50, 50);
+    settings_.gamma = std::clamp(parseInteger(gamma, 100), 50, 200);
+    settings_.dither = parseInteger(dither, 1) != 0;
     settings_.clear_on_sleep = parseInteger(clear_on_sleep, 1) != 0;
     settings_.interactive = parseInteger(interactive, 1) != 0;
     // The virtual-display stream remains quarantined. "notify" retains
@@ -493,6 +544,7 @@ public:
         std::clamp(parseInteger(frontlight_override, -1), -1, 100);
     settings_.frontlight_temperature =
         std::clamp(parseInteger(frontlight_temperature, 0), 0, 100);
+    settings_.foreground_token = propertyValue(active_package);
     settings_.full_refresh_token = propertyValue(full_refresh);
     return settings_;
   }
@@ -506,11 +558,17 @@ private:
   }
 
   CachedStringProperty active_mode_{kActiveRefreshModeProperty};
+  CachedStringProperty active_package_{kActivePackageProperty};
   CachedStringProperty global_mode_{kRefreshModeProperty};
   CachedStringProperty idle_{kIdlePolicyProperty};
   CachedStringProperty cleanup_{kCleanupPolicyProperty};
   CachedStringProperty content_aware_{kContentAwareProperty};
   CachedStringProperty scroll_detect_{kScrollDetectProperty};
+  CachedStringProperty page_interval_{kPageIntervalProperty};
+  CachedStringProperty settled_quality_{kSettledQualityProperty};
+  CachedStringProperty contrast_{kContrastProperty};
+  CachedStringProperty gamma_{kGammaProperty};
+  CachedStringProperty dither_{kDitherProperty};
   CachedStringProperty clear_on_sleep_{kClearOnSleepProperty};
   CachedStringProperty interactive_{kInteractiveProperty};
   CachedStringProperty capture_mode_{kCaptureModeProperty};
@@ -885,6 +943,7 @@ struct Frame {
   uint32_t stride = 0;
   int32_t format = 0;
   std::optional<ChangedRect> damage_hint;
+  int64_t trigger_us = 0;
 };
 
 class FrameSource {
@@ -902,6 +961,9 @@ public:
   virtual int64_t nextWakeDeadlineUs() const { return 0; }
   virtual void onFrameCompared(bool) {}
   virtual bool failed() { return false; }
+  virtual bool hasPendingFrame() const { return false; }
+  virtual void requestCapture() {}
+  virtual void deferCaptureUntil(int64_t) {}
 };
 
 // Mirrors the primary layer stack into a virtual display. SurfaceFlinger
@@ -1380,9 +1442,12 @@ public:
       stop_fd_ = -1;
     }
     pending_.store(false, std::memory_order_relaxed);
+    pending_since_us_.store(0, std::memory_order_relaxed);
     input_probe_deadline_us_ = 0;
     next_safety_probe_us_ = 0;
     capture_retry_deadline_us_ = 0;
+    capture_deferred_deadline_us_ = 0;
+    capture_not_before_us_ = 0;
     miss_confirmation_deadline_us_ = 0;
     probe_generation_ = 0;
     miss_confirmation_generation_ = 0;
@@ -1393,15 +1458,28 @@ public:
 
   bool acquire(Frame *frame) override {
     const int64_t now_us = monotonicMicros();
-    const bool notification = pending_.exchange(false);
+    const bool notification_pending = pending_.load(std::memory_order_acquire);
     const bool input_probe =
         input_probe_deadline_us_ != 0 && now_us >= input_probe_deadline_us_;
     const bool safety_probe =
         next_safety_probe_us_ != 0 && now_us >= next_safety_probe_us_;
-    if (!force_initial_capture_ && !notification && !input_probe &&
+    if (!force_initial_capture_ && !notification_pending && !input_probe &&
         !safety_probe) {
       return false;
     }
+    // The readiness check and notification consumption happen in this method.
+    // A notification racing with the caller's optimistic hasPendingFrame()
+    // check therefore cannot capture a frame before the EBC gate opens.
+    if (capture_not_before_us_ != 0 && now_us < capture_not_before_us_) {
+      capture_deferred_deadline_us_ = capture_not_before_us_;
+      return false;
+    }
+    capture_deferred_deadline_us_ = 0;
+    capture_not_before_us_ = 0;
+
+    const bool notification = pending_.exchange(false);
+    const int64_t notification_trigger_us =
+        notification ? pending_since_us_.exchange(0) : 0;
 
     current_capture_is_probe_ = !force_initial_capture_ && !notification &&
                                 (input_probe || safety_probe);
@@ -1419,6 +1497,10 @@ public:
       // acquired. Preserve every trigger and retry soon without spinning.
       if (notification) {
         pending_.store(true, std::memory_order_release);
+        int64_t empty = 0;
+        (void)pending_since_us_.compare_exchange_strong(
+            empty, notification_trigger_us, std::memory_order_release,
+            std::memory_order_relaxed);
       }
       force_initial_capture_ |= initial_capture;
       if (input_probe) {
@@ -1435,12 +1517,20 @@ public:
     if (current_capture_is_probe_) {
       probe_generation_ = probe_generation;
     }
+    frame->trigger_us = notification_trigger_us;
     next_safety_probe_us_ = now_us + kNotifierSafetyProbeDelayUs;
     return true;
   }
 
   void release() override { screenshot_.release(); }
   bool streaming() const override { return true; }
+  bool hasPendingFrame() const override {
+    return pending_.load(std::memory_order_acquire);
+  }
+  void requestCapture() override { force_initial_capture_ = true; }
+  void deferCaptureUntil(int64_t deadline_us) override {
+    capture_not_before_us_ = std::max(capture_not_before_us_, deadline_us);
+  }
   uint64_t dropped() const override {
     return dropped_.load(std::memory_order_relaxed);
   }
@@ -1457,10 +1547,12 @@ public:
 
   int64_t nextWakeDeadlineUs() const override {
     int64_t deadline_us = 0;
+    const bool capture_deferred = capture_deferred_deadline_us_ != 0;
     const int64_t deadlines[] = {
-        input_probe_deadline_us_,
-        next_safety_probe_us_,
-        capture_retry_deadline_us_,
+        capture_deferred ? 0 : input_probe_deadline_us_,
+        capture_deferred ? 0 : next_safety_probe_us_,
+        capture_deferred ? 0 : capture_retry_deadline_us_,
+        capture_deferred_deadline_us_,
         miss_confirmation_deadline_us_,
     };
     for (const int64_t candidate_us : deadlines) {
@@ -1617,6 +1709,11 @@ private:
         return;
       }
       notification_generation_.fetch_add(count, std::memory_order_release);
+      int64_t no_pending_timestamp = 0;
+      const int64_t now_us = monotonicMicros();
+      (void)pending_since_us_.compare_exchange_strong(
+          no_pending_timestamp, now_us, std::memory_order_release,
+          std::memory_order_relaxed);
       const bool already_pending =
           pending_.exchange(true, std::memory_order_acq_rel);
       const uint64_t coalesced = already_pending ? count
@@ -1637,11 +1734,14 @@ private:
   std::atomic<bool> failed_{false};
   std::atomic<uint64_t> dropped_{0};
   std::atomic<uint64_t> notification_generation_{0};
+  std::atomic<int64_t> pending_since_us_{0};
   int event_fd_ = -1;
   int stop_fd_ = -1;
   int64_t input_probe_deadline_us_ = 0;
   int64_t next_safety_probe_us_ = 0;
   int64_t capture_retry_deadline_us_ = 0;
+  int64_t capture_deferred_deadline_us_ = 0;
+  int64_t capture_not_before_us_ = 0;
   int64_t miss_confirmation_deadline_us_ = 0;
   uint64_t probe_generation_ = 0;
   uint64_t miss_confirmation_generation_ = 0;
@@ -1713,6 +1813,38 @@ public:
     return true;
   }
 
+  void configureToneMapping(int contrast, int gamma) {
+    if (contrast == contrast_ && gamma == gamma_) {
+      return;
+    }
+    contrast_ = contrast;
+    gamma_ = gamma;
+    tone_mapping_enabled_ = contrast_ != 0 || gamma_ != 100;
+
+    const float contrast_scale =
+        (259.0f * (static_cast<float>(contrast_) + 255.0f)) /
+        (255.0f * (259.0f - static_cast<float>(contrast_)));
+    const float gamma_exponent = 100.0f / static_cast<float>(gamma_);
+    for (size_t value = 0; value < tone_lut_.size(); ++value) {
+      const float contrasted = std::clamp(
+          contrast_scale * (static_cast<float>(value) - 128.0f) + 128.0f, 0.0f,
+          255.0f);
+      const float corrected =
+          powf(contrasted / 255.0f, gamma_exponent) * 255.0f;
+      tone_lut_[value] =
+          static_cast<uint8_t>(std::clamp(lroundf(corrected), 0L, 255L));
+    }
+    ALOGI("tone mapping contrast=%d gamma=%d", contrast_, gamma_);
+  }
+
+  int64_t nextUpdateDeadlineUs() const {
+    return last_update_us_ == 0 ? 0
+                                : last_update_us_ + kMinimumEbcUpdateIntervalUs;
+  }
+
+  uint64_t gateWaitTimeUs() const { return gate_wait_time_us_; }
+  uint64_t ioctlTimeUs() const { return ioctl_time_us_; }
+
   bool submit(const uint8_t *pixels, uint32_t stride, const ChangedRect &rect,
               uint32_t waveform, bool dither, bool full_refresh) {
     stage(pixels, stride, rect);
@@ -1728,12 +1860,24 @@ public:
     const size_t copy_bytes =
         static_cast<size_t>(rect.right - rect.left) * sizeof(uint32_t);
     for (uint32_t y = rect.top; y < rect.bottom; ++y) {
-      memcpy(static_cast<uint8_t *>(buffer_) +
-                 (static_cast<size_t>(y) * width_ + rect.left) *
-                     sizeof(uint32_t),
-             pixels + (static_cast<size_t>(y) * stride + rect.left) *
-                          sizeof(uint32_t),
-             copy_bytes);
+      uint32_t *destination = static_cast<uint32_t *>(buffer_) +
+                              static_cast<size_t>(y) * width_ + rect.left;
+      const uint32_t *source = reinterpret_cast<const uint32_t *>(pixels) +
+                               static_cast<size_t>(y) * stride + rect.left;
+      if (!tone_mapping_enabled_) {
+        memcpy(destination, source, copy_bytes);
+        continue;
+      }
+      for (uint32_t x = rect.left; x < rect.right; ++x) {
+        const uint32_t pixel = *source++;
+        const uint32_t luminance =
+            ((pixel & 0xffu) * 77u + ((pixel >> 8) & 0xffu) * 150u +
+             ((pixel >> 16) & 0xffu) * 29u) >>
+            8;
+        const uint32_t adjusted = tone_lut_[luminance];
+        *destination++ =
+            0xff000000u | adjusted | (adjusted << 8) | (adjusted << 16);
+      }
     }
   }
 
@@ -1745,12 +1889,12 @@ public:
   // Re-issues a waveform over the frame already held in the persistent buffer,
   // so a manual cleanup does not have to wait for the compositor to produce
   // another frame.
-  bool refreshFull(uint32_t waveform) {
+  bool refreshFull(uint32_t waveform, bool dither) {
     if (buffer_ == MAP_FAILED) {
       return false;
     }
-    return sendUpdate(ChangedRect{0, 0, width_, height_}, waveform,
-                      /*dither=*/true, /*full_refresh=*/true);
+    return sendUpdate(ChangedRect{0, 0, width_, height_}, waveform, dither,
+                      /*full_refresh=*/true);
   }
 
   bool clear() {
@@ -1773,6 +1917,7 @@ private:
       const int64_t remaining =
           last_update_us_ + kMinimumEbcUpdateIntervalUs - monotonicMicros();
       if (remaining > 0) {
+        gate_wait_time_us_ += static_cast<uint64_t>(remaining);
         usleep(static_cast<useconds_t>(remaining));
       }
     }
@@ -1788,11 +1933,13 @@ private:
     update.temperature = kEbcAutoTemperature;
     update.flags = dither ? kEbcDitherFlag : 0;
 
+    const int64_t ioctl_start_us = monotonicMicros();
     if (ioctl(fd_, kEbcSendUpdate, &update) < 0) {
       ALOGE("EBC SEND_UPDATE marker=%u failed: %s", update.update_marker,
             strerror(errno));
       return false;
     }
+    ioctl_time_us_ += static_cast<uint64_t>(monotonicMicros() - ioctl_start_us);
     last_update_us_ = monotonicMicros();
     return true;
   }
@@ -1804,6 +1951,12 @@ private:
   uint32_t height_ = 0;
   uint32_t marker_ = 1;
   int64_t last_update_us_ = 0;
+  std::array<uint8_t, 256> tone_lut_{};
+  int contrast_ = 0;
+  int gamma_ = 100;
+  bool tone_mapping_enabled_ = false;
+  uint64_t gate_wait_time_us_ = 0;
+  uint64_t ioctl_time_us_ = 0;
 };
 
 ChangedRect unionRects(const ChangedRect &left, const ChangedRect &right) {
@@ -2406,16 +2559,32 @@ void publishStats(BridgeStats *stats, bool force = false) {
   publishStat("sys.leaf3.stat.scroll_hash", stats->hash_scroll_frames,
               &success);
   publishStat("sys.leaf3.stat.cleanup", stats->cleanup_updates, &success);
+  publishStat("sys.leaf3.stat.page_turns", stats->page_turns, &success);
+  publishStat("sys.leaf3.stat.page_cleanups", stats->page_cleanups, &success);
+  publishStat("sys.leaf3.stat.settled", stats->settled_updates, &success);
   publishStat("sys.leaf3.stat.capture_us", stats->capture_time_us, &success);
   publishStat("sys.leaf3.stat.compare_us", stats->compare_time_us, &success);
   publishStat("sys.leaf3.stat.submit_us", stats->submit_time_us, &success);
+  publishStat("sys.leaf3.stat.ioctl_us", stats->ioctl_time_us, &success);
+  publishStat("sys.leaf3.stat.gate_wait_us", stats->gate_wait_time_us,
+              &success);
+  publishStat("sys.leaf3.stat.notify_capture_us",
+              stats->notification_to_capture_us, &success);
+  publishStat("sys.leaf3.stat.notify_submit_us",
+              stats->notification_to_submit_us, &success);
+  publishStat("sys.leaf3.stat.notified_captures", stats->notified_captures,
+              &success);
+  publishStat("sys.leaf3.stat.notified_submits", stats->notified_submits,
+              &success);
   if (!success) {
     ALOGW("one or more bridge statistics properties could not be published");
   }
   ALOGI("stats captures=%llu comparisons=%llu changed=%llu partial=%llu "
         "full=%llu pixels=%llu dropped=%llu split=%llu bilevel=%llu "
-        "scroll=%llu gesture_scroll=%llu hash_scroll=%llu capture_us=%llu "
-        "compare_us=%llu submit_us=%llu",
+        "scroll=%llu gesture_scroll=%llu hash_scroll=%llu page_turns=%llu "
+        "page_cleanups=%llu settled=%llu capture_us=%llu compare_us=%llu "
+        "submit_us=%llu ioctl_us=%llu gate_wait_us=%llu notify_capture_us=%llu "
+        "notify_submit_us=%llu",
         static_cast<unsigned long long>(stats->captures),
         static_cast<unsigned long long>(stats->comparisons),
         static_cast<unsigned long long>(stats->changed_frames),
@@ -2428,9 +2597,16 @@ void publishStats(BridgeStats *stats, bool force = false) {
         static_cast<unsigned long long>(stats->scroll_frames),
         static_cast<unsigned long long>(stats->gesture_scroll_frames),
         static_cast<unsigned long long>(stats->hash_scroll_frames),
+        static_cast<unsigned long long>(stats->page_turns),
+        static_cast<unsigned long long>(stats->page_cleanups),
+        static_cast<unsigned long long>(stats->settled_updates),
         static_cast<unsigned long long>(stats->capture_time_us),
         static_cast<unsigned long long>(stats->compare_time_us),
-        static_cast<unsigned long long>(stats->submit_time_us));
+        static_cast<unsigned long long>(stats->submit_time_us),
+        static_cast<unsigned long long>(stats->ioctl_time_us),
+        static_cast<unsigned long long>(stats->gate_wait_time_us),
+        static_cast<unsigned long long>(stats->notification_to_capture_us),
+        static_cast<unsigned long long>(stats->notification_to_submit_us));
   stats->last_publish_us = now_us;
 }
 
@@ -2438,6 +2614,7 @@ useconds_t activeFrameDelay(RefreshMode mode) {
   switch (mode) {
   case RefreshMode::kSpeed:
   case RefreshMode::kA2:
+  case RefreshMode::kReader:
     return kFastFrameDelayUs;
   case RefreshMode::kNormal:
   case RefreshMode::kRegal:
@@ -2567,6 +2744,7 @@ int main() {
   bool pending_full_refresh = false;
   bool cleanup_pending = false;
   bool scroll_in_progress = false;
+  bool tone_reprocess_pending = false;
   CaptureMode source_requested_mode = settings.capture_mode;
   uint32_t unchanged_frames = 0;
   uint32_t idle_poll_count = 0;
@@ -2578,6 +2756,16 @@ int main() {
   uint64_t maximum_cleanup_area = 0;
   int64_t cleanup_deadline_us = 0;
   int64_t last_scroll_activity_us = 0;
+  int64_t settled_quality_deadline_us = 0;
+  std::optional<ChangedRect> settled_quality_damage;
+  int page_turn_count = 0;
+  int applied_contrast = 1000;
+  int applied_gamma = 0;
+  int applied_dither = -1;
+  int applied_page_interval = -1;
+  std::string active_foreground_token = settings.foreground_token;
+  uint64_t accounted_gate_wait_us = 0;
+  uint64_t accounted_ioctl_us = 0;
   std::string full_refresh_token = settings.full_refresh_token;
   RefreshMode active_mode = settings.mode;
   ALOGI("refresh mode: %s", refreshModeName(active_mode));
@@ -2585,11 +2773,40 @@ int main() {
   for (;;) {
     settings = settings_cache.read();
     frontlight.update(settings, settings.interactive);
+    if (settings.contrast != applied_contrast ||
+        settings.gamma != applied_gamma ||
+        static_cast<int>(settings.dither) != applied_dither) {
+      applied_contrast = settings.contrast;
+      applied_gamma = settings.gamma;
+      applied_dither = settings.dither ? 1 : 0;
+      ebc.configureToneMapping(applied_contrast, applied_gamma);
+      tone_reprocess_pending = initialized;
+      if (source != nullptr) {
+        source->requestCapture();
+      }
+    }
+    if (!settings.settled_quality) {
+      settled_quality_damage.reset();
+      settled_quality_deadline_us = 0;
+    }
+    if (settings.page_interval != applied_page_interval) {
+      applied_page_interval = settings.page_interval;
+      page_turn_count = 0;
+    }
+    if (settings.foreground_token != active_foreground_token) {
+      active_foreground_token = settings.foreground_token;
+      page_turn_count = 0;
+      settled_quality_damage.reset();
+      settled_quality_deadline_us = 0;
+    }
 
     if (cleanup_pending && settings.cleanup == CleanupPolicy::kManual) {
       cleanup_pending = false;
       ghost.clear();
       cleanup_deadline_us = 0;
+    }
+    if (settings.cleanup == CleanupPolicy::kManual) {
+      page_turn_count = 0;
     }
 
     if (settings.full_refresh_token != full_refresh_token) {
@@ -2622,6 +2839,9 @@ int main() {
         cleanup_pending = false;
         ghost.clear();
         scroll_in_progress = false;
+        settled_quality_damage.reset();
+        settled_quality_deadline_us = 0;
+        page_turn_count = 0;
         cleanup_deadline_us = 0;
         unchanged_frames = 0;
         idle_poll_count = 0;
@@ -2657,6 +2877,9 @@ int main() {
       cleanup_pending = false;
       ghost.clear();
       scroll_in_progress = false;
+      settled_quality_damage.reset();
+      settled_quality_deadline_us = 0;
+      page_turn_count = 0;
       cleanup_deadline_us = 0;
     }
 
@@ -2673,6 +2896,9 @@ int main() {
       active_mode = settings.mode;
       cleanup_pending = false;
       ghost.clear();
+      settled_quality_damage.reset();
+      settled_quality_deadline_us = 0;
+      page_turn_count = 0;
       cleanup_deadline_us = 0;
       unchanged_frames = 0;
       idle_poll_count = 0;
@@ -2685,7 +2911,7 @@ int main() {
     if (pending_full_refresh && initialized && !first_refresh) {
       pending_full_refresh = false;
       const int64_t submit_start_us = monotonicMicros();
-      if (!ebc.refreshFull(kWaveformGc16)) {
+      if (!ebc.refreshFull(kWaveformGc16, settings.dither)) {
         return 1;
       }
       stats.submit_time_us +=
@@ -2695,9 +2921,62 @@ int main() {
       cleanup_pending = false;
       ghost.clear();
       scroll_in_progress = false;
+      settled_quality_damage.reset();
+      settled_quality_deadline_us = 0;
+      page_turn_count = 0;
       cleanup_deadline_us = 0;
     }
 
+    // Pace before capture, not after it. SurfaceFlinger continues to merge
+    // damage while this loop waits, so the subsequent screenshot contains the
+    // newest page rather than an already-stale frame captured at the start of
+    // the EBC buffer interval.
+    if (initialized) {
+      source->deferCaptureUntil(ebc.nextUpdateDeadlineUs());
+    }
+    if (initialized && source->hasPendingFrame()) {
+      const int64_t gate_start_us = monotonicMicros();
+      for (;;) {
+        const int64_t remaining_us =
+            ebc.nextUpdateDeadlineUs() - monotonicMicros();
+        if (remaining_us <= 0) {
+          break;
+        }
+        const uint32_t reasons = waiter.wait(remaining_us);
+        source->onWake(reasons);
+        if ((reasons & Waiter::kInput) != 0) {
+          input_probe_frames = kInputProbeFrames;
+        }
+      }
+      const uint64_t waited_us =
+          static_cast<uint64_t>(monotonicMicros() - gate_start_us);
+      stats.gate_wait_time_us += waited_us;
+    }
+
+    if (settled_quality_damage.has_value() &&
+        monotonicMicros() >= settled_quality_deadline_us &&
+        !source->hasPendingFrame()) {
+      const int64_t submit_start_us = monotonicMicros();
+      if (!ebc.sendStagedUpdate(*settled_quality_damage, kWaveformRegal,
+                                settings.dither,
+                                /*full_refresh=*/false)) {
+        return 1;
+      }
+      stats.submit_time_us +=
+          static_cast<uint64_t>(monotonicMicros() - submit_start_us);
+      ++stats.partial_updates;
+      ++stats.settled_updates;
+      stats.updated_pixels += settled_quality_damage->area();
+      settled_quality_damage.reset();
+      settled_quality_deadline_us = 0;
+    }
+
+    // A manual or settled-quality update above may have moved the EBC
+    // deadline after the first pacing check. Carry the final deadline into
+    // acquire() as well so a racing notification cannot capture too early.
+    if (initialized) {
+      source->deferCaptureUntil(ebc.nextUpdateDeadlineUs());
+    }
     Frame frame;
     const int64_t capture_start_us = monotonicMicros();
     const bool have_frame = source->acquire(&frame);
@@ -2712,6 +2991,11 @@ int main() {
       }
       stats.capture_time_us +=
           static_cast<uint64_t>(monotonicMicros() - capture_start_us);
+      if (frame.trigger_us != 0 && capture_start_us >= frame.trigger_us) {
+        stats.notification_to_capture_us +=
+            static_cast<uint64_t>(capture_start_us - frame.trigger_us);
+        ++stats.notified_captures;
+      }
       const uint64_t source_dropped = source->dropped();
       if (source_dropped >= source_dropped_seen) {
         stats.dropped_frames += source_dropped - source_dropped_seen;
@@ -2749,10 +3033,11 @@ int main() {
       const bool geometry_changed =
           previous.size() != static_cast<size_t>(frame.width) * frame.height;
       const bool full_refresh = first_refresh || geometry_changed;
+      const bool tone_reprocess = tone_reprocess_pending && !full_refresh;
 
       std::vector<ChangedRect> rects;
       bool changed = false;
-      if (full_refresh) {
+      if (full_refresh || tone_reprocess) {
         rects.push_back(ChangedRect{0, 0, frame.width, frame.height});
         changed = true;
       } else {
@@ -2788,7 +3073,8 @@ int main() {
           now_us - last_scroll_activity_us < kScrollFlingWindowUs;
 
       bool scrolling = false;
-      if (changed && !full_refresh && settings.scroll_detect) {
+      if (changed && !full_refresh && !tone_reprocess &&
+          settings.scroll_detect) {
         const ChangedRect box = damage.bounds();
         // App content rarely occupies the status and navigation bars. Requiring
         // half of the physical panel excluded otherwise valid Settings and
@@ -2830,6 +3116,43 @@ int main() {
       }
 
       if (changed) {
+        const ChangedRect changed_bounds =
+            full_refresh ? ChangedRect{0, 0, frame.width, frame.height}
+                         : damage.bounds();
+        const uint64_t changed_area =
+            full_refresh ? panel_pixels : damage.dirtyArea();
+        const bool large_static_change =
+            !full_refresh && !tone_reprocess && !scrolling &&
+            changed_bounds.area() * kPageTurnMinimumAreaDenominator >=
+                panel_pixels &&
+            changed_area * kPageTurnMinimumAreaDenominator >= panel_pixels;
+        const bool reader_page_turn =
+            active_mode == RefreshMode::kReader && large_static_change;
+        bool page_cleanup_due = false;
+        if (reader_page_turn) {
+          ++stats.page_turns;
+          if (settings.cleanup != CleanupPolicy::kManual &&
+              settings.page_interval > 0) {
+            ++page_turn_count;
+            if (page_turn_count >= settings.page_interval) {
+              page_turn_count = 0;
+              page_cleanup_due = true;
+            }
+          }
+        }
+        const bool settle_regal_page = active_mode == RefreshMode::kRegal &&
+                                       settings.settled_quality &&
+                                       large_static_change;
+        if (settled_quality_damage.has_value() && !settle_regal_page) {
+          if (scrolling) {
+            settled_quality_damage.reset();
+            settled_quality_deadline_us = 0;
+          } else {
+            settled_quality_deadline_us =
+                monotonicMicros() + kSettledPageDelayUs;
+          }
+        }
+
         ++stats.changed_frames;
         if (rects.size() > 1) {
           ++stats.split_frames;
@@ -2842,8 +3165,9 @@ int main() {
         // changes keep the cheaper contiguous copy path.
         const uint64_t update_area = rects.front().area();
         const bool sparse_damage =
-            !full_refresh && damage.dirtyArea() * kSplitBenefitDenominator <
-                                 update_area * kSplitBenefitNumerator;
+            !full_refresh && !tone_reprocess &&
+            damage.dirtyArea() * kSplitBenefitDenominator <
+                update_area * kSplitBenefitNumerator;
         if (sparse_damage) {
           damage.forEachDirtyRun([&](const ChangedRect &rect) {
             ebc.stage(frame.pixels, frame.stride, rect);
@@ -2880,7 +3204,14 @@ int main() {
             fast = true;
             break;
           case RefreshMode::kRegal:
-            waveform = kWaveformRegal;
+            // Show a large new page with AUTO immediately. Applying REGAL to
+            // every intermediate frame makes page turns feel serialized; a
+            // separately paced settled pass below restores its final quality.
+            waveform = settle_regal_page ? kWaveformAuto : kWaveformRegal;
+            break;
+          case RefreshMode::kReader:
+            waveform = page_cleanup_due ? kWaveformGc16 : kWaveformDu;
+            fast = !page_cleanup_due;
             break;
           case RefreshMode::kNormal:
             waveform = kWaveformAuto;
@@ -2915,11 +3246,17 @@ int main() {
           if (full_refresh) {
             waveform = kWaveformGc16;
             fast = false;
+          } else if (tone_reprocess) {
+            // A user-requested tone change must redraw the accumulated frame,
+            // but it does not require a flashing full-update mode.
+            waveform = kWaveformAuto;
+            fast = false;
           }
 
           // Dithering trades sharpness for tonal range. Text only loses.
-          const bool dither = !(settings.content_aware && bilevel);
-          if (!dither) {
+          const bool dither =
+              settings.dither && !(settings.content_aware && bilevel);
+          if (settings.content_aware && bilevel) {
             ++stats.bilevel_updates;
           }
 
@@ -2936,7 +3273,7 @@ int main() {
               static_cast<uint64_t>(monotonicMicros() - submit_start_us);
           submitted_any = true;
           needs_cleanup |= fast;
-          if (fast && !full_refresh) {
+          if (fast && !full_refresh && !reader_page_turn) {
             if (sparse_damage) {
               damage.forEachDirtyRun([&](const ChangedRect &dirty_run) {
                 ghost.markFast(dirty_run);
@@ -2952,6 +3289,30 @@ int main() {
           } else {
             ++stats.partial_updates;
             stats.updated_pixels += rect.area();
+          }
+          if (frame.trigger_us != 0) {
+            const int64_t submitted_us = monotonicMicros();
+            if (submitted_us >= frame.trigger_us) {
+              stats.notification_to_submit_us +=
+                  static_cast<uint64_t>(submitted_us - frame.trigger_us);
+              ++stats.notified_submits;
+            }
+          }
+          if (page_cleanup_due) {
+            ++stats.page_cleanups;
+            ghost.clear(update_rect);
+            cleanup_pending = ghost.hasDirty();
+            if (!cleanup_pending) {
+              cleanup_deadline_us = 0;
+            }
+          }
+          if (settle_regal_page) {
+            settled_quality_damage =
+                settled_quality_damage.has_value()
+                    ? unionRects(*settled_quality_damage, update_rect)
+                    : update_rect;
+            settled_quality_deadline_us =
+                monotonicMicros() + kSettledPageDelayUs;
           }
 
           scroll.invalidate(rect.top, rect.bottom);
@@ -2970,6 +3331,7 @@ int main() {
             }
           }
           first_refresh = false;
+          tone_reprocess_pending = false;
           pending_full_refresh = false;
           unchanged_frames = 0;
           idle_poll_count = 0;
@@ -2977,12 +3339,25 @@ int main() {
             cleanup_pending = false;
             ghost.clear();
             scroll_in_progress = false;
+            settled_quality_damage.reset();
+            settled_quality_deadline_us = 0;
+            page_turn_count = 0;
             cleanup_deadline_us = 0;
           } else if (settings.cleanup == CleanupPolicy::kManual) {
             cleanup_pending = false;
             ghost.clear();
             scroll_in_progress = false;
             cleanup_deadline_us = 0;
+          } else if (reader_page_turn) {
+            // Reader pages follow the stock count-based policy. Do not insert
+            // a quiet-time cleanup after every fast page; the selected page
+            // interval determines when GC16 is used. A cleanup already owed by
+            // an earlier scroll remains independent and is merely postponed
+            // until page turning becomes quiet.
+            if (cleanup_pending) {
+              cleanup_deadline_us =
+                  monotonicMicros() + cleanupDelay(settings.cleanup);
+            }
           } else {
             cleanup_pending = cleanup_pending || needs_cleanup;
             // Once a fast update has made cleanup necessary, every subsequent
@@ -3019,7 +3394,7 @@ int main() {
         }
         const int64_t submit_start_us = monotonicMicros();
         if (!ebc.sendStagedUpdate(cleanup_damage, kWaveformGc16,
-                                  /*dither=*/true,
+                                  settings.dither,
                                   /*full_refresh=*/false)) {
           return 1;
         }
@@ -3043,6 +3418,16 @@ int main() {
     if (input_probe_frames > 0) {
       --input_probe_frames;
     }
+    const uint64_t driver_gate_wait_us = ebc.gateWaitTimeUs();
+    if (driver_gate_wait_us >= accounted_gate_wait_us) {
+      stats.gate_wait_time_us += driver_gate_wait_us - accounted_gate_wait_us;
+    }
+    accounted_gate_wait_us = driver_gate_wait_us;
+    const uint64_t driver_ioctl_us = ebc.ioctlTimeUs();
+    if (driver_ioctl_us >= accounted_ioctl_us) {
+      stats.ioctl_time_us += driver_ioctl_us - accounted_ioctl_us;
+    }
+    accounted_ioctl_us = driver_ioctl_us;
     publishStats(&stats);
 
     if (source->streaming()) {
@@ -3053,6 +3438,13 @@ int main() {
       if (cleanup_pending && cleanup_deadline_us != 0) {
         timeout_us =
             std::max<int64_t>(0, cleanup_deadline_us - monotonicMicros());
+      }
+      if (settled_quality_damage.has_value() &&
+          settled_quality_deadline_us != 0) {
+        const int64_t settled_timeout_us = std::max<int64_t>(
+            0, settled_quality_deadline_us - monotonicMicros());
+        timeout_us = timeout_us < 0 ? settled_timeout_us
+                                    : std::min(timeout_us, settled_timeout_us);
       }
       const int64_t source_deadline_us = source->nextWakeDeadlineUs();
       if (source_deadline_us != 0) {
@@ -3076,6 +3468,12 @@ int main() {
     }
     if (cleanup_pending && cleanup_deadline_us != 0) {
       const int64_t remaining = cleanup_deadline_us - monotonicMicros();
+      delay = static_cast<useconds_t>(
+          std::clamp<int64_t>(remaining, 0, static_cast<int64_t>(delay)));
+    }
+    if (settled_quality_damage.has_value() &&
+        settled_quality_deadline_us != 0) {
+      const int64_t remaining = settled_quality_deadline_us - monotonicMicros();
       delay = static_cast<useconds_t>(
           std::clamp<int64_t>(remaining, 0, static_cast<int64_t>(delay)));
     }

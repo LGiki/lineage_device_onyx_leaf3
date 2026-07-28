@@ -43,6 +43,11 @@
             android:id="@+id/spec_regal"
             style="@style/Leaf3SpecificationTab"
             android:text="@string/regal" />
+
+        <RadioButton
+            android:id="@+id/spec_reader"
+            style="@style/Leaf3SpecificationTab"
+            android:text="@string/reader" />
     </RadioGroup>
 
     <TextView

@@ -27,7 +27,8 @@ public final class ProfileActivity extends Activity {
   private static final int APPS_PER_PAGE = 6;
   private static final String[] PROFILE_MODES = {
       "", Leaf3Settings.MODE_BALANCED, Leaf3Settings.MODE_NORMAL,
-      Leaf3Settings.MODE_SPEED, Leaf3Settings.MODE_A2, Leaf3Settings.MODE_REGAL
+      Leaf3Settings.MODE_SPEED, Leaf3Settings.MODE_A2, Leaf3Settings.MODE_REGAL,
+      Leaf3Settings.MODE_READER
   };
 
   private final List<AppEntry> apps = new ArrayList<>();
@@ -148,7 +149,8 @@ public final class ProfileActivity extends Activity {
         getText(R.string.normal_explanation),
         getText(R.string.speed_explanation),
         getText(R.string.a2_explanation),
-        getText(R.string.regal_explanation)
+        getText(R.string.regal_explanation),
+        getText(R.string.reader_explanation)
     };
     final String currentMode = Leaf3Settings.getProfile(this, entry.packageName);
     int checkedItem = 0;

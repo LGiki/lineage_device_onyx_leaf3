@@ -457,13 +457,17 @@ guessed:
 | `speed` | DU | Faster monochrome page and list changes |
 | `a2` | ANIM/A2 | Fastest interaction, with more ghosting and less grayscale |
 | `regal` | REGAL | Text-oriented partial updates with reduced ghosting |
+| `reader` | DU, periodic GC16 | Fast page turns with stock-style count-based cleanup |
 
 The bridge retains its sampled-luminance classifier for future
 composer-native work, but content-aware waveform selection is quarantined.
 On the direct EBC path it caused large quality passes that could overload the
 preserved vendor stack. Balanced therefore uses the proven-safe dithered AUTO
 path outside scrolling; `leaf3-refresh content-aware on` is rejected.
-Explicit Normal, Speed, A2, and Regal modes retain their requested waveform.
+Explicit Normal, Speed, and A2 retain their requested waveform. Reader applies
+DU to large static page changes and GC16 at the selected page interval.
+Regal exposes large new pages through AUTO immediately, then optionally applies
+one REGAL quality pass after 180 ms without a replacement frame.
 
 Fast updates age the 32-pixel tiles they affect. Balanced starts bounded
 regional GC16 cleanup after the compositor has been quiet for 600 ms; Quality
@@ -493,7 +497,9 @@ previous-frame cache; unchanged pixels already stored inside the larger update
 rectangle remain valid. This reduces capture and copy traffic without
 increasing the number of driver updates. The bridge enforces at least 100 ms
 between every EBC ioctl, including cleanup passes, to keep the undocumented
-vendor queue within the cadence used by the known-good bridge.
+vendor queue within the cadence used by the known-good bridge. Notification
+mode waits for that deadline before taking its screenshot, allowing additional
+SurfaceFlinger commits and damage to coalesce into the newest page.
 
 Responsive, Balanced, and Battery cap fallback idle polling at one, two, and
 five seconds. The Cypress `cyttsp5_mt` monitor wakes that fallback immediately
@@ -556,6 +562,7 @@ adb shell leaf3-refresh normal
 adb shell leaf3-refresh speed
 adb shell leaf3-refresh a2
 adb shell leaf3-refresh regal
+adb shell leaf3-refresh reader
 ```
 
 Configure idle capture and ghost cleanup:
@@ -571,6 +578,12 @@ adb shell leaf3-refresh scroll-detect on
 adb shell leaf3-refresh scroll-detect off
 adb shell leaf3-refresh capture notify
 adb shell leaf3-refresh capture poll
+adb shell leaf3-refresh page-interval 10
+adb shell leaf3-refresh page-interval off
+adb shell leaf3-refresh settled-quality on
+adb shell leaf3-refresh contrast 10
+adb shell leaf3-refresh gamma 110
+adb shell leaf3-refresh dither on
 ```
 
 Notification capture is the default and persists across reboots. It wakes on
@@ -702,7 +715,7 @@ LineageOS 18.1 exposes only one brightness slider.
 The launcher contains a platform-signed system app named **Leaf3 Controls**.
 It provides:
 
-- Balanced, Normal, Speed, A2, and Regal refresh modes.
+- Balanced, Normal, Speed, A2, Regal, and Reader refresh modes.
 - Per-app refresh profiles with a global fallback.
 - Responsive, Balanced, and Battery idle-capture policies.
 - Quality, Balanced, and Manual ghost-cleanup policies.
@@ -712,6 +725,10 @@ It provides:
 - An opt-in global grayscale switch using SurfaceFlinger's color matrix.
 - Default-on touch-slop scroll detection with a row-hash fallback.
 - Per-tile aged, bounded regional post-scroll quality cleanup.
+- Reader page-count cleanup with stock intervals from every page through every
+  50 pages, plus an automatic-cleanup-off option.
+- Optional settled Regal rendering and bridge-side contrast, gamma, and
+  dithering controls.
 - A visibly quarantined content-aware control that cannot activate the
   unstable direct-EBC path.
 - Frontlight on/off.
@@ -730,7 +747,7 @@ intermediate LCD animation frames waste CPU and create E-Ink ghosting. The app
 switch can restore all three Android scales.
 
 Open the Quick Settings editor to add the two Leaf3 tiles. **Refresh mode**
-cycles through all five modes and applies a temporary override to the current
+cycles through all six modes and applies a temporary override to the current
 foreground app; the override clears when the foreground package changes or
 the state service restarts. **Clean screen** requests one full GC16 update.
 Long-pressing either tile opens Leaf3 Controls. The ROM does not modify an
