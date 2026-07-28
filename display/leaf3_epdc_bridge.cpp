@@ -6,7 +6,8 @@
  * BOOX Leaf3 uses a dummy DSI connector as Android's primary display. The
  * actual E-Ink panel is updated through ONYX's private /dev/ebc interface.
  * Capture SurfaceFlinger's primary display and forward changed regions to
- * EBC. An optional frame notifier avoids polling while the display is idle.
+ * EBC. A frame notifier avoids idle polling and supplies conservative
+ * compositor damage for cropped capture.
  */
 
 #define LOG_TAG "leaf3_epdc_bridge"
@@ -146,7 +147,10 @@ constexpr int64_t kNotifierSafetyProbeDelayUs = 30000000;
 constexpr int64_t kNotifierCaptureRetryDelayUs = 100000;
 constexpr int64_t kNotifierRaceGraceDelayUs = 500000;
 constexpr uint32_t kLeaf3FrameNotifierTransaction = 1037;
-constexpr int32_t kLeaf3FrameNotifierVersion = 1;
+constexpr int32_t kLeaf3FrameNotifierVersion = 2;
+constexpr int32_t kLeaf3FrameNotifierUnregister = 0;
+constexpr int32_t kLeaf3FrameNotifierRegister = 1;
+constexpr int32_t kLeaf3FrameNotifierTakeDamage = 2;
 // ONYX changes waveform as soon as a drag crosses Android's touch slop. Keep
 // the raw-input gesture active briefly after the last movement so a released
 // fling stays fast, and allow row hashes to extend an established fling.
@@ -176,6 +180,9 @@ constexpr size_t kMaxCoalesceRects = 64;
 // bounding box they replace.
 constexpr uint64_t kSplitBenefitNumerator = 3;
 constexpr uint64_t kSplitBenefitDenominator = 4;
+// Automatic GC16 never spans more than one third of the panel. Separate,
+// disconnected dirty areas are cleaned in independently paced passes.
+constexpr uint64_t kMaximumAutomaticCleanupAreaDenominator = 3;
 
 // A region whose sampled luminance is this heavily concentrated at black and
 // white is text or flat UI rather than an image.
@@ -256,7 +263,7 @@ struct Settings {
   bool scroll_detect = true;
   bool clear_on_sleep = true;
   bool interactive = true;
-  CaptureMode capture_mode = CaptureMode::kPoll;
+  CaptureMode capture_mode = CaptureMode::kNotify;
   bool frontlight_enabled = true;
   int android_brightness = 128;
   int frontlight_override = -1;
@@ -266,6 +273,8 @@ struct Settings {
 
 struct BridgeStats {
   uint64_t captures = 0;
+  uint64_t cropped_captures = 0;
+  uint64_t captured_pixels = 0;
   uint64_t comparisons = 0;
   uint64_t changed_frames = 0;
   uint64_t partial_updates = 0;
@@ -277,6 +286,7 @@ struct BridgeStats {
   uint64_t scroll_frames = 0;
   uint64_t gesture_scroll_frames = 0;
   uint64_t hash_scroll_frames = 0;
+  uint64_t cleanup_updates = 0;
   uint64_t capture_time_us = 0;
   uint64_t compare_time_us = 0;
   uint64_t submit_time_us = 0;
@@ -473,7 +483,7 @@ public:
     // The virtual-display stream remains quarantined. "notify" retains
     // ScreenshotClient capture and changes only how SurfaceFlinger wakes it.
     settings_.capture_mode =
-        std::string(propertyValue(capture_mode, "poll")) == "notify"
+        std::string(propertyValue(capture_mode, "notify")) == "notify"
             ? CaptureMode::kNotify
             : CaptureMode::kPoll;
     settings_.frontlight_enabled = parseInteger(frontlight_enabled, 1) != 0;
@@ -874,6 +884,7 @@ struct Frame {
   uint32_t height = 0;
   uint32_t stride = 0;
   int32_t format = 0;
+  std::optional<ChangedRect> damage_hint;
 };
 
 class FrameSource {
@@ -1113,25 +1124,60 @@ private:
 // shows something. The caller paces this source itself.
 class ScreenshotFrameSource : public FrameSource {
 public:
+  explicit ScreenshotFrameSource(bool damage_aware = false)
+      : damage_aware_(damage_aware) {}
+
   bool start() override {
     while (!(display_id_ = SurfaceComposerClient::getInternalDisplayId())) {
       ALOGW("SurfaceFlinger internal display is not ready");
       usleep(kRetryDelayUs);
     }
+    if (damage_aware_) {
+      display_token_ = SurfaceComposerClient::getInternalDisplayToken();
+      if (display_token_ == nullptr) {
+        ALOGW("SurfaceFlinger internal display token is not ready");
+        return false;
+      }
+    }
     return true;
   }
 
-  void stop() override { release(); }
+  void stop() override {
+    release();
+    assembled_.clear();
+    display_token_.clear();
+    full_width_ = 0;
+    full_height_ = 0;
+  }
 
-  bool acquire(Frame *frame) override {
+  bool acquire(Frame *frame) override { return acquire(frame, std::nullopt); }
+
+  bool acquire(Frame *frame,
+               const std::optional<ChangedRect> &requested_damage) {
     if (!display_id_) {
       return false;
     }
 
     Dataspace dataspace;
     sp<GraphicBuffer> buffer;
-    const status_t status =
-        ScreenshotClient::capture(*display_id_, &dataspace, &buffer);
+    std::optional<ChangedRect> capture_damage;
+    status_t status = NO_ERROR;
+    if (damage_aware_ && !assembled_.empty() && requested_damage.has_value()) {
+      capture_damage = clippedDamage(*requested_damage);
+    }
+    if (capture_damage.has_value()) {
+      const ChangedRect &rect = *capture_damage;
+      status = ScreenshotClient::capture(
+          display_token_, Dataspace::V0_SRGB,
+          android::ui::PixelFormat::RGBA_8888,
+          Rect(static_cast<int32_t>(rect.left), static_cast<int32_t>(rect.top),
+               static_cast<int32_t>(rect.right),
+               static_cast<int32_t>(rect.bottom)),
+          rect.right - rect.left, rect.bottom - rect.top,
+          /*useIdentityTransform=*/false, /*rotation=*/0, &buffer);
+    } else {
+      status = ScreenshotClient::capture(*display_id_, &dataspace, &buffer);
+    }
     if (status != NO_ERROR || buffer == nullptr) {
       ALOGW("display capture failed: %d", status);
       return false;
@@ -1150,12 +1196,45 @@ public:
       return false;
     }
 
-    held_ = buffer;
-    frame->pixels = static_cast<const uint8_t *>(pixels);
-    frame->width = buffer->getWidth();
-    frame->height = buffer->getHeight();
-    frame->stride = buffer->getStride();
-    frame->format = buffer->getPixelFormat();
+    if (!damage_aware_) {
+      held_ = buffer;
+      frame->pixels = static_cast<const uint8_t *>(pixels);
+      frame->width = buffer->getWidth();
+      frame->height = buffer->getHeight();
+      frame->stride = buffer->getStride();
+      frame->format = buffer->getPixelFormat();
+      frame->damage_hint.reset();
+      return true;
+    }
+
+    if (!capture_damage.has_value()) {
+      full_width_ = buffer->getWidth();
+      full_height_ = buffer->getHeight();
+      assembled_.resize(static_cast<size_t>(full_width_) * full_height_);
+      copyIntoAssembly(static_cast<const uint8_t *>(pixels),
+                       buffer->getStride(),
+                       ChangedRect{0, 0, full_width_, full_height_});
+    } else {
+      const ChangedRect &rect = *capture_damage;
+      if (buffer->getWidth() != rect.right - rect.left ||
+          buffer->getHeight() != rect.bottom - rect.top) {
+        ALOGW("cropped capture returned %ux%u for %ux%u damage",
+              buffer->getWidth(), buffer->getHeight(), rect.right - rect.left,
+              rect.bottom - rect.top);
+        buffer->unlock();
+        return acquire(frame, std::nullopt);
+      }
+      copyIntoAssembly(static_cast<const uint8_t *>(pixels),
+                       buffer->getStride(), rect);
+    }
+    buffer->unlock();
+
+    frame->pixels = reinterpret_cast<const uint8_t *>(assembled_.data());
+    frame->width = full_width_;
+    frame->height = full_height_;
+    frame->stride = full_width_;
+    frame->format = android::PIXEL_FORMAT_RGBA_8888;
+    frame->damage_hint = capture_damage;
     return true;
   }
 
@@ -1169,13 +1248,52 @@ public:
   bool streaming() const override { return false; }
 
 private:
+  std::optional<ChangedRect> clippedDamage(const ChangedRect &damage) const {
+    ChangedRect result{
+        std::min(damage.left, full_width_),
+        std::min(damage.top, full_height_),
+        std::min(damage.right, full_width_),
+        std::min(damage.bottom, full_height_),
+    };
+    if (result.left >= result.right || result.top >= result.bottom) {
+      return std::nullopt;
+    }
+    result.left = (result.left / kTileSize) * kTileSize;
+    result.top = (result.top / kTileSize) * kTileSize;
+    result.right = std::min(
+        full_width_, ((result.right + kTileSize - 1) / kTileSize) * kTileSize);
+    result.bottom =
+        std::min(full_height_,
+                 ((result.bottom + kTileSize - 1) / kTileSize) * kTileSize);
+    return result;
+  }
+
+  void copyIntoAssembly(const uint8_t *pixels, uint32_t stride,
+                        const ChangedRect &destination) {
+    const uint32_t copy_width = destination.right - destination.left;
+    const size_t copy_bytes =
+        static_cast<size_t>(copy_width) * sizeof(uint32_t);
+    for (uint32_t y = destination.top; y < destination.bottom; ++y) {
+      const uint32_t source_y = y - destination.top;
+      memcpy(assembled_.data() + static_cast<size_t>(y) * full_width_ +
+                 destination.left,
+             pixels + static_cast<size_t>(source_y) * stride * sizeof(uint32_t),
+             copy_bytes);
+    }
+  }
+
+  bool damage_aware_ = false;
   std::optional<PhysicalDisplayId> display_id_;
+  sp<IBinder> display_token_;
   sp<GraphicBuffer> held_;
+  std::vector<uint32_t> assembled_;
+  uint32_t full_width_ = 0;
+  uint32_t full_height_ = 0;
 };
 
 // Uses a private, device-specific SurfaceFlinger transaction to register an
-// eventfd. The compositor signal changes only when screenshots are requested;
-// capture and EBC submission remain on the known-good production path.
+// eventfd and atomically consume coalesced display damage. Capture and EBC
+// submission remain on the known-good screenshot production path.
 class NotifiedScreenshotFrameSource : public FrameSource {
 public:
   explicit NotifiedScreenshotFrameSource(Waiter *waiter) : waiter_(waiter) {}
@@ -1294,7 +1412,9 @@ public:
     input_probe_deadline_us_ = 0;
     capture_retry_deadline_us_ = 0;
 
-    if (!screenshot_.acquire(frame)) {
+    const std::optional<ChangedRect> damage =
+        notification ? takeDamage() : std::nullopt;
+    if (!screenshot_.acquire(frame, damage)) {
       // Consuming the wake before capture is safe only after a frame has been
       // acquired. Preserve every trigger and retry soon without spinning.
       if (notification) {
@@ -1409,7 +1529,8 @@ private:
     android::Parcel reply;
     data.writeInterfaceToken(android::String16("android.ui.ISurfaceComposer"));
     data.writeInt32(kLeaf3FrameNotifierVersion);
-    data.writeInt32(enable ? 1 : 0);
+    data.writeInt32(enable ? kLeaf3FrameNotifierRegister
+                           : kLeaf3FrameNotifierUnregister);
     if (enable) {
       data.writeFileDescriptor(event_fd_);
     }
@@ -1420,6 +1541,39 @@ private:
       return status;
     }
     return static_cast<status_t>(reply.readInt32());
+  }
+
+  std::optional<ChangedRect> takeDamage() {
+    if (surface_flinger_ == nullptr) {
+      return std::nullopt;
+    }
+
+    android::Parcel data;
+    android::Parcel reply;
+    data.writeInterfaceToken(android::String16("android.ui.ISurfaceComposer"));
+    data.writeInt32(kLeaf3FrameNotifierVersion);
+    data.writeInt32(kLeaf3FrameNotifierTakeDamage);
+    const status_t status = surface_flinger_->transact(
+        kLeaf3FrameNotifierTransaction, data, &reply);
+    if (status != NO_ERROR || reply.readInt32() == 0) {
+      return std::nullopt;
+    }
+
+    const int32_t left = reply.readInt32();
+    const int32_t top = reply.readInt32();
+    const int32_t right = reply.readInt32();
+    const int32_t bottom = reply.readInt32();
+    if (left < 0 || top < 0 || right <= left || bottom <= top) {
+      ALOGW("SurfaceFlinger returned invalid damage [%d,%d,%d,%d]", left, top,
+            right, bottom);
+      return std::nullopt;
+    }
+    return ChangedRect{
+        static_cast<uint32_t>(left),
+        static_cast<uint32_t>(top),
+        static_cast<uint32_t>(right),
+        static_cast<uint32_t>(bottom),
+    };
   }
 
   void notificationThread() {
@@ -1474,7 +1628,7 @@ private:
   }
 
   Waiter *waiter_;
-  ScreenshotFrameSource screenshot_;
+  ScreenshotFrameSource screenshot_{/*damage_aware=*/true};
   sp<IBinder> surface_flinger_;
   sp<DeathObserver> death_observer_;
   std::thread notification_thread_;
@@ -1675,33 +1829,47 @@ public:
 
   // Returns false when the frame is identical to |previous|.
   bool compare(const uint8_t *pixels, uint32_t stride,
-               const std::vector<uint32_t> &previous) {
+               const std::vector<uint32_t> &previous,
+               const std::optional<ChangedRect> &limit = std::nullopt) {
     std::fill(tiles_.begin(), tiles_.end(), 0);
     bool any = false;
-    const size_t row_bytes = static_cast<size_t>(width_) * sizeof(uint32_t);
+    const uint32_t left = limit.has_value() ? limit->left : 0;
+    const uint32_t top = limit.has_value() ? limit->top : 0;
+    const uint32_t right = limit.has_value() ? limit->right : width_;
+    const uint32_t bottom = limit.has_value() ? limit->bottom : height_;
+    if (left >= right || top >= bottom || right > width_ || bottom > height_) {
+      return false;
+    }
+    const uint32_t first_column = left / kTileSize;
+    const uint32_t last_column =
+        std::min(columns_, (right + kTileSize - 1) / kTileSize);
+    const size_t row_bytes =
+        static_cast<size_t>(right - left) * sizeof(uint32_t);
+    const size_t row_offset = static_cast<size_t>(left) * sizeof(uint32_t);
 
-    for (uint32_t y = 0; y < height_; ++y) {
+    for (uint32_t y = top; y < bottom; ++y) {
       const uint8_t *row =
           pixels + static_cast<size_t>(y) * stride * sizeof(uint32_t);
       const auto *old_row = reinterpret_cast<const uint8_t *>(
           previous.data() + static_cast<size_t>(y) * width_);
       // bionic's memcmp is SIMD, so an unchanged row costs one wide pass and
       // no per-pixel work at all.
-      if (memcmp(row, old_row, row_bytes) == 0) {
+      if (memcmp(row + row_offset, old_row + row_offset, row_bytes) == 0) {
         continue;
       }
 
       uint8_t *tile_row =
           tiles_.data() + static_cast<size_t>(y / kTileSize) * columns_;
-      for (uint32_t column = 0; column < columns_; ++column) {
+      for (uint32_t column = first_column; column < last_column; ++column) {
         if (tile_row[column] != 0) {
           continue;
         }
         const uint32_t x = column * kTileSize;
+        const uint32_t tile_left = std::max(x, left);
+        const uint32_t tile_right = std::min(x + kTileSize, right);
         const size_t bytes =
-            static_cast<size_t>(std::min(kTileSize, width_ - x)) *
-            sizeof(uint32_t);
-        const size_t offset = static_cast<size_t>(x) * sizeof(uint32_t);
+            static_cast<size_t>(tile_right - tile_left) * sizeof(uint32_t);
+        const size_t offset = static_cast<size_t>(tile_left) * sizeof(uint32_t);
         if (memcmp(row + offset, old_row + offset, bytes) != 0) {
           tile_row[column] = 1;
           any = true;
@@ -1908,6 +2076,127 @@ private:
   uint32_t rows_ = 0;
 };
 
+// Ages tiles touched by fast waveforms. Cleanup starts with the oldest tile and
+// grows through adjacent dirty tiles without crossing the automatic area cap,
+// avoiding a large bounding box between unrelated parts of the screen.
+class GhostMap {
+public:
+  void resize(uint32_t width, uint32_t height) {
+    width_ = width;
+    height_ = height;
+    columns_ = (width + kTileSize - 1) / kTileSize;
+    rows_ = (height + kTileSize - 1) / kTileSize;
+    ages_.assign(static_cast<size_t>(columns_) * rows_, 0);
+  }
+
+  void clear() { std::fill(ages_.begin(), ages_.end(), 0); }
+
+  void clear(const ChangedRect &rect) {
+    forEachTile(rect, [&](size_t index) { ages_[index] = 0; });
+  }
+
+  void markFast(const ChangedRect &rect) {
+    forEachTile(rect, [&](size_t index) {
+      ages_[index] =
+          static_cast<uint8_t>(std::min<int>(UINT8_MAX, ages_[index] + 1));
+    });
+  }
+
+  bool hasDirty() const {
+    return std::any_of(ages_.begin(), ages_.end(),
+                       [](uint8_t age) { return age != 0; });
+  }
+
+  ChangedRect nextCleanup(uint64_t maximum_area) const {
+    if (!hasDirty()) {
+      return {};
+    }
+
+    const auto seed_iterator = std::max_element(ages_.begin(), ages_.end());
+    const size_t seed = static_cast<size_t>(seed_iterator - ages_.begin());
+    const uint32_t seed_row = static_cast<uint32_t>(seed / columns_);
+    const uint32_t seed_column = static_cast<uint32_t>(seed % columns_);
+    ChangedRect result = tileRect(seed_column, seed_row);
+
+    std::vector<uint8_t> visited(ages_.size(), 0);
+    std::vector<size_t> queue;
+    queue.push_back(seed);
+    visited[seed] = 1;
+    for (size_t cursor = 0; cursor < queue.size(); ++cursor) {
+      const size_t index = queue[cursor];
+      const uint32_t row = static_cast<uint32_t>(index / columns_);
+      const uint32_t column = static_cast<uint32_t>(index % columns_);
+      const int32_t neighbor_columns[] = {
+          static_cast<int32_t>(column) - 1,
+          static_cast<int32_t>(column) + 1,
+          static_cast<int32_t>(column),
+          static_cast<int32_t>(column),
+      };
+      const int32_t neighbor_rows[] = {
+          static_cast<int32_t>(row),
+          static_cast<int32_t>(row),
+          static_cast<int32_t>(row) - 1,
+          static_cast<int32_t>(row) + 1,
+      };
+      for (size_t neighbor = 0; neighbor < 4; ++neighbor) {
+        const int32_t next_column = neighbor_columns[neighbor];
+        const int32_t next_row = neighbor_rows[neighbor];
+        if (next_column < 0 || next_row < 0 ||
+            next_column >= static_cast<int32_t>(columns_) ||
+            next_row >= static_cast<int32_t>(rows_)) {
+          continue;
+        }
+        const size_t next_index =
+            static_cast<size_t>(next_row) * columns_ + next_column;
+        if (visited[next_index] != 0 || ages_[next_index] == 0) {
+          continue;
+        }
+        visited[next_index] = 1;
+        const ChangedRect candidate =
+            unionRects(result, tileRect(static_cast<uint32_t>(next_column),
+                                        static_cast<uint32_t>(next_row)));
+        if (candidate.area() > maximum_area) {
+          continue;
+        }
+        result = candidate;
+        queue.push_back(next_index);
+      }
+    }
+    return result;
+  }
+
+private:
+  template <typename Callback>
+  void forEachTile(const ChangedRect &rect, Callback callback) {
+    const uint32_t first_column = std::min(columns_, rect.left / kTileSize);
+    const uint32_t last_column =
+        std::min(columns_, (rect.right + kTileSize - 1) / kTileSize);
+    const uint32_t first_row = std::min(rows_, rect.top / kTileSize);
+    const uint32_t last_row =
+        std::min(rows_, (rect.bottom + kTileSize - 1) / kTileSize);
+    for (uint32_t row = first_row; row < last_row; ++row) {
+      for (uint32_t column = first_column; column < last_column; ++column) {
+        callback(static_cast<size_t>(row) * columns_ + column);
+      }
+    }
+  }
+
+  ChangedRect tileRect(uint32_t column, uint32_t row) const {
+    return ChangedRect{
+        column * kTileSize,
+        row * kTileSize,
+        std::min(width_, (column + 1) * kTileSize),
+        std::min(height_, (row + 1) * kTileSize),
+    };
+  }
+
+  std::vector<uint8_t> ages_;
+  uint32_t width_ = 0;
+  uint32_t height_ = 0;
+  uint32_t columns_ = 0;
+  uint32_t rows_ = 0;
+};
+
 uint32_t luminance(uint32_t pixel) {
   // Capture buffers are RGBA_8888, so the red channel is the low byte.
   const uint32_t red = pixel & 0xffu;
@@ -2099,6 +2388,10 @@ void publishStats(BridgeStats *stats, bool force = false) {
 
   bool success = true;
   publishStat("sys.leaf3.stat.captures", stats->captures, &success);
+  publishStat("sys.leaf3.stat.captures_cropped", stats->cropped_captures,
+              &success);
+  publishStat("sys.leaf3.stat.capture_pixels", stats->captured_pixels,
+              &success);
   publishStat("sys.leaf3.stat.comparisons", stats->comparisons, &success);
   publishStat("sys.leaf3.stat.changed", stats->changed_frames, &success);
   publishStat("sys.leaf3.stat.partial", stats->partial_updates, &success);
@@ -2112,6 +2405,7 @@ void publishStats(BridgeStats *stats, bool force = false) {
               &success);
   publishStat("sys.leaf3.stat.scroll_hash", stats->hash_scroll_frames,
               &success);
+  publishStat("sys.leaf3.stat.cleanup", stats->cleanup_updates, &success);
   publishStat("sys.leaf3.stat.capture_us", stats->capture_time_us, &success);
   publishStat("sys.leaf3.stat.compare_us", stats->compare_time_us, &success);
   publishStat("sys.leaf3.stat.submit_us", stats->submit_time_us, &success);
@@ -2255,6 +2549,7 @@ int main() {
   EbcDevice ebc;
   FrontlightBridge frontlight;
   DamageMap damage;
+  GhostMap ghost;
   ScrollDetector scroll;
   BridgeStats stats;
   std::vector<uint32_t> previous;
@@ -2271,7 +2566,6 @@ int main() {
   bool display_was_on = settings.interactive;
   bool pending_full_refresh = false;
   bool cleanup_pending = false;
-  bool cleanup_damage_valid = false;
   bool scroll_in_progress = false;
   CaptureMode source_requested_mode = settings.capture_mode;
   uint32_t unchanged_frames = 0;
@@ -2281,9 +2575,9 @@ int main() {
   uint32_t panel_width = 0;
   uint32_t panel_height = 0;
   uint64_t panel_pixels = 0;
+  uint64_t maximum_cleanup_area = 0;
   int64_t cleanup_deadline_us = 0;
   int64_t last_scroll_activity_us = 0;
-  ChangedRect cleanup_damage = {};
   std::string full_refresh_token = settings.full_refresh_token;
   RefreshMode active_mode = settings.mode;
   ALOGI("refresh mode: %s", refreshModeName(active_mode));
@@ -2294,7 +2588,7 @@ int main() {
 
     if (cleanup_pending && settings.cleanup == CleanupPolicy::kManual) {
       cleanup_pending = false;
-      cleanup_damage_valid = false;
+      ghost.clear();
       cleanup_deadline_us = 0;
     }
 
@@ -2326,7 +2620,7 @@ int main() {
         previous.clear();
         scroll.reset();
         cleanup_pending = false;
-        cleanup_damage_valid = false;
+        ghost.clear();
         scroll_in_progress = false;
         cleanup_deadline_us = 0;
         unchanged_frames = 0;
@@ -2361,7 +2655,7 @@ int main() {
       previous.clear();
       scroll.reset();
       cleanup_pending = false;
-      cleanup_damage_valid = false;
+      ghost.clear();
       scroll_in_progress = false;
       cleanup_deadline_us = 0;
     }
@@ -2378,7 +2672,7 @@ int main() {
     if (settings.mode != active_mode) {
       active_mode = settings.mode;
       cleanup_pending = false;
-      cleanup_damage_valid = false;
+      ghost.clear();
       cleanup_deadline_us = 0;
       unchanged_frames = 0;
       idle_poll_count = 0;
@@ -2399,7 +2693,7 @@ int main() {
       ++stats.full_updates;
       stats.updated_pixels += panel_pixels;
       cleanup_pending = false;
-      cleanup_damage_valid = false;
+      ghost.clear();
       scroll_in_progress = false;
       cleanup_deadline_us = 0;
     }
@@ -2409,6 +2703,13 @@ int main() {
     const bool have_frame = source->acquire(&frame);
     if (have_frame) {
       ++stats.captures;
+      if (frame.damage_hint.has_value()) {
+        ++stats.cropped_captures;
+        stats.captured_pixels += frame.damage_hint->area();
+      } else {
+        stats.captured_pixels +=
+            static_cast<uint64_t>(frame.width) * frame.height;
+      }
       stats.capture_time_us +=
           static_cast<uint64_t>(monotonicMicros() - capture_start_us);
       const uint64_t source_dropped = source->dropped();
@@ -2428,7 +2729,11 @@ int main() {
         panel_width = frame.width;
         panel_height = frame.height;
         panel_pixels = static_cast<uint64_t>(frame.width) * frame.height;
+        maximum_cleanup_area = std::max<uint64_t>(
+            kTileSize * kTileSize,
+            panel_pixels / kMaximumAutomaticCleanupAreaDenominator);
         damage.resize(frame.width, frame.height);
+        ghost.resize(frame.width, frame.height);
         scroll.resize(frame.width, frame.height);
       }
 
@@ -2452,7 +2757,8 @@ int main() {
         changed = true;
       } else {
         const int64_t compare_start_us = monotonicMicros();
-        changed = damage.compare(frame.pixels, frame.stride, previous);
+        changed = damage.compare(frame.pixels, frame.stride, previous,
+                                 frame.damage_hint);
         if (changed) {
           rects = damage.rectangles();
           changed = !rects.empty();
@@ -2631,10 +2937,13 @@ int main() {
           submitted_any = true;
           needs_cleanup |= fast;
           if (fast && !full_refresh) {
-            cleanup_damage = cleanup_damage_valid
-                                 ? unionRects(cleanup_damage, update_rect)
-                                 : update_rect;
-            cleanup_damage_valid = true;
+            if (sparse_damage) {
+              damage.forEachDirtyRun([&](const ChangedRect &dirty_run) {
+                ghost.markFast(dirty_run);
+              });
+            } else {
+              ghost.markFast(update_rect);
+            }
           }
 
           if (full_refresh) {
@@ -2666,18 +2975,16 @@ int main() {
           idle_poll_count = 0;
           if (full_refresh) {
             cleanup_pending = false;
-            cleanup_damage_valid = false;
+            ghost.clear();
             scroll_in_progress = false;
             cleanup_deadline_us = 0;
           } else if (settings.cleanup == CleanupPolicy::kManual) {
             cleanup_pending = false;
-            cleanup_damage_valid = false;
+            ghost.clear();
             scroll_in_progress = false;
             cleanup_deadline_us = 0;
           } else {
-            if (needs_cleanup) {
-              cleanup_pending = true;
-            }
+            cleanup_pending = cleanup_pending || needs_cleanup;
             // Once a fast update has made cleanup necessary, every subsequent
             // changed frame postpones GC16. This prevents cleanup flashes from
             // being inserted into a continuous scroll merely because one
@@ -2696,14 +3003,20 @@ int main() {
       source->release();
     }
 
-    // A fast waveform leaves the affected region dirty. Clean only the union
-    // of those regions once the compositor is quiet; repeatedly applying
-    // full-screen GC16 for small content-aware text updates is both wasteful
-    // and too much load for this vendor EBC path.
+    // A fast waveform ages only the tiles it touched. Once the compositor is
+    // quiet, clean one bounded connected region starting at the oldest tile.
+    // Disconnected regions remain pending for separately paced passes.
     if (cleanup_pending && settings.cleanup != CleanupPolicy::kManual &&
-        initialized && cleanup_damage_valid) {
+        initialized && ghost.hasDirty()) {
       const bool quiet = monotonicMicros() >= cleanup_deadline_us;
       if (quiet) {
+        const ChangedRect cleanup_damage =
+            ghost.nextCleanup(maximum_cleanup_area);
+        if (cleanup_damage.area() == 0) {
+          cleanup_pending = false;
+          cleanup_deadline_us = 0;
+          continue;
+        }
         const int64_t submit_start_us = monotonicMicros();
         if (!ebc.sendStagedUpdate(cleanup_damage, kWaveformGc16,
                                   /*dither=*/true,
@@ -2713,11 +3026,17 @@ int main() {
         stats.submit_time_us +=
             static_cast<uint64_t>(monotonicMicros() - submit_start_us);
         ++stats.partial_updates;
+        ++stats.cleanup_updates;
         stats.updated_pixels += cleanup_damage.area();
-        cleanup_pending = false;
-        cleanup_damage_valid = false;
-        scroll_in_progress = false;
-        cleanup_deadline_us = 0;
+        ghost.clear(cleanup_damage);
+        cleanup_pending = ghost.hasDirty();
+        if (cleanup_pending) {
+          cleanup_deadline_us =
+              monotonicMicros() + cleanupDelay(settings.cleanup);
+        } else {
+          scroll_in_progress = false;
+          cleanup_deadline_us = 0;
+        }
       }
     }
 

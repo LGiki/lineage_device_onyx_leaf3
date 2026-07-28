@@ -7,15 +7,18 @@ at once.
 
 ## Current baseline
 
-The production display path uses periodic `ScreenshotClient` capture and one
-rate-limited EBC update rectangle per changed frame. The following safe
-optimizations are already present:
+The production display path uses SurfaceFlinger notifications, damage-cropped
+`ScreenshotClient` capture, and one rate-limited EBC update rectangle per
+changed frame. Periodic full capture remains the automatic fallback. The
+following safe optimizations are already present:
 
-- 32-pixel tile damage detection with sparse copies into the persistent EBC
-  buffer and previous-frame cache.
+- Compositor damage delivery with tile-aligned cropped capture, 32-pixel tile
+  verification, and sparse copies into the persistent EBC buffer and
+  previous-frame cache.
 - Touch-slop scroll detection, with row-hash detection as a fallback, and A2
   updates only for sufficiently large scrolling regions.
-- Regional post-scroll GC16 cleanup after the display becomes quiet.
+- Per-tile fast-update aging and bounded regional GC16 cleanup after the
+  display becomes quiet.
 - Blocking display-off waits and property-value caching.
 - Disabled wallpaper, doze/AOD drawing, automatic brightness, touch ripples,
   edge glow, and navigation-bar scrims.
@@ -30,18 +33,19 @@ quarantined because both caused crashes under composition or scrolling load.
 | Phase | Status | Goal | Risk |
 | --- | --- | --- | --- |
 | 0 | Complete | Stabilize and optimize the screenshot/EBC bridge | Low |
-| 1 | Validation | Wake screenshot capture from a SurfaceFlinger frame notification | Low to medium |
-| 2 | Planned | Deliver compositor damage with the notification | Medium |
+| 1 | Validation, default | Wake screenshot capture from a SurfaceFlinger frame notification | Low to medium |
+| 2 | Validation | Deliver compositor damage with the notification | Medium |
 | 3 | Planned | Add conservative automatic application profiles | Low |
 | 4 | Planned | Make grayscale the default for new installations | Low |
-| 5 | Planned | Add update-count-based regional ghost cleanup | Medium |
+| 5 | Validation | Add per-tile update-aged regional ghost cleanup | Medium |
 | 6 | Research | Port the stock composer-native EPDC protocol | High |
 | 7 | Research | Expose stock-style per-surface E-Ink controls | High |
 
 ### Phase 1: SurfaceFlinger frame notification
 
-The opt-in notification implementation is present. It remains in validation
-status until it passes the hardware gate below; polling is still the default.
+Notification is the default on new installations. It remains in validation
+status until it passes the hardware gate below; explicit `poll` selection and
+automatic failure fallback remain available.
 
 Add a small, LineageOS 18.1-specific SurfaceFlinger integration that signals a
 nonblocking `eventfd` after a physical-display frame is committed. The bridge
@@ -51,7 +55,8 @@ retain the existing 100 ms EBC pacing.
 This phase does not create a virtual display, modify the vendor composer, or
 send additional EBC ioctls. Registration failure, unsupported builds, or a
 stalled notifier must automatically fall back to the current polling path.
-The notification path should initially require an explicit opt-in property.
+The notification path is selected by the default property and remains
+independently reversible with `leaf3-refresh capture poll`.
 
 Success criteria:
 
@@ -63,9 +68,10 @@ Success criteria:
 
 ### Phase 2: SurfaceFlinger damage delivery
 
-Extend the frame notification to include the dirty display region or a bounded
-set of dirty regions. Use that information to limit screenshot comparison and
-copy work.
+The versioned frame-notifier transaction now accumulates the default display's
+dirty region and lets the bridge atomically consume its bounding rectangle.
+The bridge aligns it to its 32-pixel grid, captures only that crop, updates a
+persistent assembled frame, and compares only intersecting tiles.
 
 Initially, continue to coalesce damage into one safe EBC rectangle and one
 ioctl. The purpose of this phase is to reduce CPU time and memory bandwidth,
@@ -103,10 +109,11 @@ features, WebView, and media before making the default permanent.
 
 ### Phase 5: Update-count-based ghost management
 
-Track fast regional updates and schedule a regional GC16 cleanup after a
-configurable threshold, in addition to the existing quiet-period cleanup.
-Reset the counter only for the cleaned region, and merge overlapping dirty
-regions conservatively.
+Track a saturating age for every tile touched by a fast update. After the
+existing quiet period, begin at the oldest tile and grow through adjacent
+dirty tiles without exceeding one third of the panel. Reset only tiles covered
+by the GC16 region; disconnected tiles remain queued for a separately paced
+cleanup.
 
 Automatic ghost management must never request a full-screen cleanup. Manual
 cleanup policy must continue to disable automatic cleanup, and every cleanup

@@ -52,4 +52,5 @@ PRODUCT_PACKAGES += \
 
 PRODUCT_SYSTEM_DEFAULT_PROPERTIES += \
     ro.board.platform=bengal \
-    ro.virtual_ab.enabled=true
+    ro.virtual_ab.enabled=true \
+    persist.sys.leaf3.capture_mode=notify

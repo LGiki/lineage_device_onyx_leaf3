@@ -80,6 +80,7 @@ public final class Leaf3StateService extends Service {
     if (Leaf3Settings.hasGrayscalePreference()) {
       Leaf3Settings.applyGrayscale(this, Leaf3Settings.isGrayscaleEnabled());
     }
+    completeAnimationDefaults();
     publishState();
     updateForegroundPackage();
   }
@@ -130,6 +131,36 @@ public final class Leaf3StateService extends Service {
         INTERACTIVE,
         powerManager != null && powerManager.isInteractive() ? "1" : "0");
     publishBrightness();
+  }
+
+  private void completeAnimationDefaults() {
+    final float window =
+        Settings.Global.getFloat(getContentResolver(),
+                                 Settings.Global.WINDOW_ANIMATION_SCALE, 1.0f);
+    final float transition =
+        Settings.Global.getFloat(
+            getContentResolver(), Settings.Global.TRANSITION_ANIMATION_SCALE,
+            1.0f);
+    final float animator =
+        Settings.Global.getFloat(getContentResolver(),
+                                 Settings.Global.ANIMATOR_DURATION_SCALE, 1.0f);
+    // SettingsProvider exposes overlay resources for the first two scales but
+    // initializes animator_duration_scale independently. Complete the E-Ink
+    // default only when the first two values still identify this device's
+    // animation-off default, preserving users who enabled animations.
+    if (window == 0.0f && transition == 0.0f && animator != 0.0f) {
+      try {
+        if (Settings.Global.putFloat(
+                getContentResolver(), Settings.Global.ANIMATOR_DURATION_SCALE,
+                0.0f)) {
+          Log.i(TAG, "Completed the E-Ink animation-off defaults");
+        } else {
+          Log.e(TAG, "SettingsProvider rejected the animator duration default");
+        }
+      } catch (SecurityException exception) {
+        Log.e(TAG, "Could not set the animator duration default", exception);
+      }
+    }
   }
 
   private void publishBrightness() {

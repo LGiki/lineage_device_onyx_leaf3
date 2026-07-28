@@ -430,10 +430,11 @@ command submits the regions with the same HWC frame. Those core stock
 components are not binary-compatible replacements for LineageOS. This device
 tree instead builds `leaf3_epdc_bridge`, a small native service which captures
 the primary display with `ScreenshotClient::capture()` and forwards changed
-regions to `/dev/ebc`. Polling remains the default. An opt-in LineageOS 18.1
-SurfaceFlinger hook can signal the bridge after a physical-display commit,
-avoiding unchanged idle captures without creating a virtual display. The
-bridge uses one full GC16 refresh at startup and then sends one coalesced
+regions to `/dev/ebc`. A LineageOS 18.1 SurfaceFlinger hook signals the bridge
+after a physical-display commit and provides the coalesced compositor damage.
+The bridge captures only that tile-aligned crop, while startup, safety probes,
+invalid damage, and notifier failure retain full-capture or polling fallbacks.
+The bridge uses one full GC16 refresh at startup and then sends one coalesced
 damage rectangle per frame.
 
 An event-driven `BufferItemConsumer` implementation remains in the source for
@@ -464,12 +465,15 @@ preserved vendor stack. Balanced therefore uses the proven-safe dithered AUTO
 path outside scrolling; `leaf3-refresh content-aware on` is rejected.
 Explicit Normal, Speed, A2, and Regal modes retain their requested waveform.
 
-Fast updates mark their affected region as needing cleanup. Balanced submits
-one regional GC16 update after the compositor has been quiet for 600 ms;
-Quality uses 300 ms. Every changed frame extends that deadline, so continuous
-movement never inserts a cleanup flash between scroll frames. Manual
-suppresses automatic cleanup while preserving startup, wake, sleep-clear, and
-explicit full refreshes. The bridge follows stock ONYX behavior by parsing
+Fast updates age the 32-pixel tiles they affect. Balanced starts bounded
+regional GC16 cleanup after the compositor has been quiet for 600 ms; Quality
+uses 300 ms. Cleanup starts with the oldest tile, grows through connected
+dirty tiles, and never covers more than one third of the panel. Disconnected
+areas remain queued for separately paced passes. Every changed frame extends
+the deadline, so continuous movement never inserts a cleanup flash between
+scroll frames. Manual suppresses automatic cleanup while preserving startup,
+wake, sleep-clear, and explicit full refreshes. The bridge follows stock ONYX
+behavior by parsing
 the Cypress multitouch stream and entering scrolling mode after movement
 crosses touch slop. A2 is used only when the associated damage spans at least
 one third of the panel, regardless of the current per-app waveform profile.
@@ -479,12 +483,14 @@ flings. Scrolling is enabled when its property is unset, can be disabled with
 stops.
 
 The ONYX ioctl embeds an `mxcfb_rect`, whose binary field order is `top`,
-`left`, `width`, `height`. The bridge tracks damage on a 32-pixel tile grid and
-uses bionic's vectorized `memcmp`, then coalesces dirty tiles into one update
-rectangle. For sparse damage, only dirty tile runs are copied into the
-persistent EBC framebuffer and previous-frame cache; the unchanged pixels
-already stored inside the larger update rectangle remain valid. Dense damage
-uses contiguous rectangle copies. This reduces memory traffic without
+`left`, `width`, `height`. SurfaceFlinger coalesces physical-display damage and
+the bridge atomically consumes it with each frame notification. The bridge
+aligns the crop to a 32-pixel tile grid, preserves a full assembled frame, and
+uses bionic's vectorized `memcmp` only on intersecting tiles. Invalid or absent
+damage falls back to a full capture and comparison. For sparse damage, only
+dirty tile runs are copied into the persistent EBC framebuffer and
+previous-frame cache; unchanged pixels already stored inside the larger update
+rectangle remain valid. This reduces capture and copy traffic without
 increasing the number of driver updates. The bridge enforces at least 100 ms
 between every EBC ioctl, including cleanup passes, to keep the undocumented
 vendor queue within the cadence used by the known-good bridge.
@@ -535,12 +541,12 @@ The service property should be `running` and the log should contain:
 
 ```text
 mapped EBC buffer for 1264x1680
-capture mode: periodic screenshot
+capture mode: SurfaceFlinger frame notification
 touch wake-up enabled on /dev/input/event3 (cyttsp5_mt)
 ```
 
-After opting in with `leaf3-refresh capture notify`, the capture log changes
-to `capture mode: SurfaceFlinger frame notification`.
+Existing installations that explicitly saved `poll`, or devices whose
+notifier fails validation, instead log `capture mode: periodic screenshot`.
 
 Change the global strategy without rebooting:
 
@@ -567,7 +573,7 @@ adb shell leaf3-refresh capture notify
 adb shell leaf3-refresh capture poll
 ```
 
-Notification capture is opt-in and persists across reboots. It wakes on
+Notification capture is the default and persists across reboots. It wakes on
 SurfaceFlinger commits, probes after unacknowledged touch, and performs a
 30-second safety probe while idle. Idle capture policy affects only polling
 and polling fallback. Request a one-time full GC16 cleanup after visible
@@ -705,7 +711,7 @@ It provides:
 - Native bridge counters and timing diagnostics.
 - An opt-in global grayscale switch using SurfaceFlinger's color matrix.
 - Default-on touch-slop scroll detection with a row-hash fallback.
-- Regional post-scroll quality cleanup.
+- Per-tile aged, bounded regional post-scroll quality cleanup.
 - A visibly quarantined content-aware control that cannot activate the
   unstable direct-EBC path.
 - Frontlight on/off.
@@ -719,9 +725,9 @@ The controls use the same persistent properties as `leaf3-refresh` and
 `leaf3-frontlight`, so changes made in the app are visible to the command-line
 tools and survive a reboot. Manual brightness disables Android-slider
 following until **Follow Android brightness slider** is enabled again.
-Window and transition animations default to off for new users because
+Window, transition, and animator effects default to off for new users because
 intermediate LCD animation frames waste CPU and create E-Ink ghosting. The app
-switch also controls animator effects and can restore all three Android scales.
+switch can restore all three Android scales.
 
 Open the Quick Settings editor to add the two Leaf3 tiles. **Refresh mode**
 cycles through all five modes and applies a temporary override to the current
@@ -788,9 +794,10 @@ The final command must print `false`. After rebuilding, flash `system.img`,
 `system.img`; the EPDC bridge and Leaf3 Controls switch are in
 `system_ext.img`.
 
-Android's default window and transition animation scales are both `1.0`.
-Animations generate many intermediate frames and ghosting without adding much
-value on E-Ink. Disable them for the current user with:
+Android's window, transition, and animator duration scales normally default to
+`1.0`. Fresh Leaf3 installations default all three to zero because animations
+generate intermediate frames and ghosting without adding much value on E-Ink.
+Disable them for an existing user with:
 
 ```sh
 adb shell leaf3-refresh animations-off
@@ -855,11 +862,11 @@ adb shell dmesg |
 adb shell dumpsys SurfaceFlinger > leaf3-surfaceflinger.txt
 ```
 
-The default production path uses periodic screenshot capture. The opt-in
-`notify` path uses the same screenshot and EBC code after a SurfaceFlinger
-eventfd wake. The separate event-driven virtual-display implementation is
-retained only for controlled development and must not be enabled on normal
-builds.
+The default production path uses damage-aware screenshot capture after a
+SurfaceFlinger eventfd wake. It automatically falls back to periodic full
+screenshots if notification or damage validation fails. The separate
+event-driven virtual-display implementation is retained only for controlled
+development and must not be enabled on normal builds.
 
 ### Settings shortcut crashes SystemUI
 

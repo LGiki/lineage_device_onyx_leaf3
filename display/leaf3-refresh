@@ -150,7 +150,7 @@ case "${1:-status}" in
         [ "$scroll_detect" = 0 ] || scroll_detect=1
         case "$capture_mode" in
             notify) ;;
-            *) capture_mode=poll ;;
+            *) capture_mode=notify ;;
         esac
         echo "Leaf3 global refresh mode: $mode"
         echo "Active refresh override: ${active_mode:-none}"

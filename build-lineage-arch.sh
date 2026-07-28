@@ -345,9 +345,16 @@ python3 "$TARGET_DEVICE_DIR/tools/patch-systemui-assist-handler.py" \
 
 log "Adding the Leaf3 SurfaceFlinger frame notifier"
 readonly SURFACEFLINGER_SOURCE="$SOURCE_DIR/frameworks/native/services/surfaceflinger/SurfaceFlinger.cpp"
+readonly FRAME_NOTIFIER_PATCHER="$SCRIPT_DIR/tools/patch-surfaceflinger-frame-notifier.py"
+readonly INSTALLED_FRAME_NOTIFIER_PATCHER="$TARGET_DEVICE_DIR/tools/patch-surfaceflinger-frame-notifier.py"
 [[ -f "$SURFACEFLINGER_SOURCE" ]] || \
   die "missing SurfaceFlinger source: $SURFACEFLINGER_SOURCE"
-python3 "$TARGET_DEVICE_DIR/tools/patch-surfaceflinger-frame-notifier.py" \
+[[ -f "$FRAME_NOTIFIER_PATCHER" ]] || \
+  die "missing SurfaceFlinger patcher: $FRAME_NOTIFIER_PATCHER"
+cmp "$FRAME_NOTIFIER_PATCHER" "$INSTALLED_FRAME_NOTIFIER_PATCHER" || \
+  die "installed SurfaceFlinger patcher differs from $FRAME_NOTIFIER_PATCHER"
+python3 "$FRAME_NOTIFIER_PATCHER" --version
+python3 "$FRAME_NOTIFIER_PATCHER" \
   "$SURFACEFLINGER_SOURCE"
 
 log "Downloading and extracting checksum-pinned stock boot inputs"
@@ -430,7 +437,7 @@ grep -Fq 'android.permission.REAL_GET_TASKS' "$LEAF3_PRIVAPP_PERMISSIONS" || \
   die "Leaf3 Controls allowlist is missing foreground-task access"
 python3 "$TARGET_DEVICE_DIR/tools/patch-systemui-assist-handler.py" --check \
   "$ASSIST_MANAGER_SOURCE"
-python3 "$TARGET_DEVICE_DIR/tools/patch-surfaceflinger-frame-notifier.py" --check \
+python3 "$FRAME_NOTIFIER_PATCHER" --check \
   "$SURFACEFLINGER_SOURCE"
 python3 "$TARGET_DEVICE_DIR/tools/patch-vintf-kernel-matrix.py" --check \
   "$PRODUCT_OUT/system/etc/vintf/compatibility_matrix.5.xml"
@@ -441,6 +448,9 @@ grep -aFq 'Leaf3 frame notifier registered' "$SURFACEFLINGER_LIBRARY" || \
   die "built SurfaceFlinger library is missing the Leaf3 frame notifier"
 grep -Fxq 'ro.adb.secure=1' "$PRODUCT_OUT/system/etc/prop.default" || \
   die "build did not enable authenticated ADB in system/etc/prop.default"
+grep -Fxq 'persist.sys.leaf3.capture_mode=notify' \
+  "$PRODUCT_OUT/system/etc/prop.default" || \
+  die "build did not make frame notification the default capture mode"
 [[ -s "$PRODUCT_OUT/system_ext/etc/selinux/system_ext_sepolicy.cil" ]] || \
   die "system_ext is missing its SELinux policy"
 grep -Fq 'leaf3_epdc_bridge' \
