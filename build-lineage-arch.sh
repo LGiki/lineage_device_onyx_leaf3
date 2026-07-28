@@ -215,7 +215,7 @@ fi
 
 missing_commands=()
 for command_name in \
-  awk bash ccache cpio curl git gzip java make openssl python3 repo rsync \
+  awk bash c++ ccache cpio curl git gzip java make openssl python3 repo rsync \
   sha256sum unzip xmllint zip; do
   command -v "$command_name" >/dev/null 2>&1 || missing_commands+=("$command_name")
 done
@@ -343,16 +343,27 @@ readonly ASSIST_MANAGER_SOURCE="$SOURCE_DIR/frameworks/base/packages/SystemUI/sr
 python3 "$TARGET_DEVICE_DIR/tools/patch-systemui-assist-handler.py" \
   "$ASSIST_MANAGER_SOURCE"
 
-log "Adding the Leaf3 SurfaceFlinger frame notifier"
+log "Adding the Leaf3 SurfaceFlinger notifier and composer EPDC transport"
+readonly FRAMEWORKS_NATIVE_SOURCE="$SOURCE_DIR/frameworks/native"
 readonly SURFACEFLINGER_SOURCE="$SOURCE_DIR/frameworks/native/services/surfaceflinger/SurfaceFlinger.cpp"
+readonly COMPOSER_EPDC_PATCHER="$SCRIPT_DIR/tools/patch-lineage-composer-epdc.py"
+readonly INSTALLED_COMPOSER_EPDC_PATCHER="$TARGET_DEVICE_DIR/tools/patch-lineage-composer-epdc.py"
 readonly FRAME_NOTIFIER_PATCHER="$SCRIPT_DIR/tools/patch-surfaceflinger-frame-notifier.py"
 readonly INSTALLED_FRAME_NOTIFIER_PATCHER="$TARGET_DEVICE_DIR/tools/patch-surfaceflinger-frame-notifier.py"
 [[ -f "$SURFACEFLINGER_SOURCE" ]] || \
   die "missing SurfaceFlinger source: $SURFACEFLINGER_SOURCE"
+[[ -f "$COMPOSER_EPDC_PATCHER" ]] || \
+  die "missing composer-native EPDC patcher: $COMPOSER_EPDC_PATCHER"
 [[ -f "$FRAME_NOTIFIER_PATCHER" ]] || \
   die "missing SurfaceFlinger patcher: $FRAME_NOTIFIER_PATCHER"
+cmp "$COMPOSER_EPDC_PATCHER" "$INSTALLED_COMPOSER_EPDC_PATCHER" || \
+  die "installed composer EPDC patcher differs from $COMPOSER_EPDC_PATCHER"
 cmp "$FRAME_NOTIFIER_PATCHER" "$INSTALLED_FRAME_NOTIFIER_PATCHER" || \
   die "installed SurfaceFlinger patcher differs from $FRAME_NOTIFIER_PATCHER"
+python3 "$COMPOSER_EPDC_PATCHER" --version
+python3 "$TARGET_DEVICE_DIR/tools/test-composer-epdc-abi.py"
+python3 "$COMPOSER_EPDC_PATCHER" \
+  "$FRAMEWORKS_NATIVE_SOURCE"
 python3 "$FRAME_NOTIFIER_PATCHER" --version
 python3 "$FRAME_NOTIFIER_PATCHER" \
   "$SURFACEFLINGER_SOURCE"
@@ -437,6 +448,8 @@ grep -Fq 'android.permission.REAL_GET_TASKS' "$LEAF3_PRIVAPP_PERMISSIONS" || \
   die "Leaf3 Controls allowlist is missing foreground-task access"
 python3 "$TARGET_DEVICE_DIR/tools/patch-systemui-assist-handler.py" --check \
   "$ASSIST_MANAGER_SOURCE"
+python3 "$COMPOSER_EPDC_PATCHER" --check \
+  "$FRAMEWORKS_NATIVE_SOURCE"
 python3 "$FRAME_NOTIFIER_PATCHER" --check \
   "$SURFACEFLINGER_SOURCE"
 python3 "$TARGET_DEVICE_DIR/tools/patch-vintf-kernel-matrix.py" --check \
@@ -446,11 +459,16 @@ readonly SURFACEFLINGER_LIBRARY="$PRODUCT_OUT/system/lib64/libsurfaceflinger.so"
   die "system is missing the 64-bit SurfaceFlinger library"
 grep -aFq 'Leaf3 frame notifier registered' "$SURFACEFLINGER_LIBRARY" || \
   die "built SurfaceFlinger library is missing the Leaf3 frame notifier"
+grep -aFq 'composer-native EPDC transport is ready' "$SURFACEFLINGER_LIBRARY" || \
+  die "built SurfaceFlinger library is missing composer-native EPDC"
 grep -Fxq 'ro.adb.secure=1' "$PRODUCT_OUT/system/etc/prop.default" || \
   die "build did not enable authenticated ADB in system/etc/prop.default"
 grep -Fxq 'persist.sys.leaf3.capture_mode=notify' \
   "$PRODUCT_OUT/system/etc/prop.default" || \
   die "build did not make frame notification the default capture mode"
+grep -Fxq 'persist.sys.leaf3.epdc_backend=bridge' \
+  "$PRODUCT_OUT/system/etc/prop.default" || \
+  die "build did not keep the direct-EBC bridge as the safe EPDC default"
 [[ -s "$PRODUCT_OUT/system_ext/etc/selinux/system_ext_sepolicy.cil" ]] || \
   die "system_ext is missing its SELinux policy"
 grep -Fq 'leaf3_epdc_bridge' \

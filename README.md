@@ -426,16 +426,21 @@ The stock ROM solves this with matched ONYX modifications across
 the preserved Qualcomm composer service. Each surface carries a batch of
 five-integer EPDC entries (`left`, `top`, `right`, `bottom`, and waveform
 mode); SurfaceFlinger merges them and the vendor composer's `CommitEpdc`
-command submits the regions with the same HWC frame. Those core stock
-components are not binary-compatible replacements for LineageOS. This device
-tree instead builds `leaf3_epdc_bridge`, a small native service which captures
-the primary display with `ScreenshotClient::capture()` and forwards changed
-regions to `/dev/ebc`. A LineageOS 18.1 SurfaceFlinger hook signals the bridge
-after a physical-display commit and provides the coalesced compositor damage.
-The bridge captures only that tile-aligned crop, while startup, safety probes,
-invalid damage, and notifier failure retain full-capture or polling fallbacks.
-The bridge uses one full GC16 refresh at startup and then sends one coalesced
-damage rectangle per frame.
+command submits the regions with the same HWC frame. Those binary framework
+components are not compatible replacements for LineageOS, so this tree
+reimplements the confirmed command in LineageOS 18.1 source.
+
+The safe default remains `leaf3_epdc_bridge`, which captures the primary
+display with `ScreenshotClient::capture()` and forwards changed regions to
+`/dev/ebc`. An opt-in composer backend instead queues opcode `0x08020000`,
+an update count, and up to eight `left, top, right, bottom, mode` records
+immediately before the matching HWC present command. It first verifies the
+preserved service exposes the QTI composer 3.0 descriptor. Unsupported
+services or a native command/present failure permanently block native
+submission for that boot and start the direct-EBC bridge automatically.
+The native controller does not start its timer or admit commands until
+SurfaceFlinger has also installed its refresh callback, avoiding work during
+partial compositor initialization.
 
 An event-driven `BufferItemConsumer` implementation remains in the source for
 controlled development, but it is not selected in production. On this
@@ -553,6 +558,33 @@ touch wake-up enabled on /dev/input/event3 (cyttsp5_mt)
 
 Existing installations that explicitly saved `poll`, or devices whose
 notifier fails validation, instead log `capture mode: periodic screenshot`.
+
+The composer-native backend is experimental and requires a reboot to enter:
+
+```sh
+adb shell leaf3-refresh backend composer
+adb reboot
+adb shell leaf3-refresh status
+adb shell dumpsys SurfaceFlinger | grep 'Leaf3 composer EPDC'
+```
+
+It eliminates screenshot capture, comparison, buffer copies, and direct EBC
+ioctls. Balanced/Normal, Speed, A2, Regal, Reader interval cleanup, dithering,
+settled Regal, and regional cleanup are implemented natively. Automatic
+scroll detection, contrast/gamma staging, idle capture policy, and white
+clear-on-sleep are bridge-only; Leaf3 Controls disables them while composer
+mode is active.
+
+Return to the bridge immediately if the panel misbehaves:
+
+```sh
+adb shell leaf3-refresh backend bridge
+```
+
+This sets the native boot-block property, drains any admitted composer
+submission, and observes the 100 ms EPDC safety interval before the bridge
+begins direct EBC submission. Reboot afterward to make the bridge-only state
+clean and permanent.
 
 Change the global strategy without rebooting:
 

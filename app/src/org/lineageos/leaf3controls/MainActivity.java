@@ -4,6 +4,8 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.os.SystemProperties;
 import android.provider.Settings;
@@ -27,16 +29,34 @@ public final class MainActivity extends Activity {
       "persist.sys.leaf3.frontlight_brightness";
   private static final String FRONTLIGHT_TEMPERATURE =
       "persist.sys.leaf3.frontlight_temperature";
+  private static final long BACKEND_REFRESH_MILLIS = 1000;
 
   private boolean loading = true;
+  private final Handler backendRefreshHandler =
+      new Handler(Looper.getMainLooper());
+  private final Runnable backendStateRefresh = new Runnable() {
+    @Override
+    public void run() {
+      updateBackendControls();
+      backendRefreshHandler.postDelayed(this, BACKEND_REFRESH_MILLIS);
+    }
+  };
   private SeekBar brightness;
   private SeekBar temperature;
+  private SeekBar contrast;
+  private SeekBar gamma;
   private Switch followAndroidBrightness;
+  private Switch clearOnSleep;
+  private Switch scrollDetection;
+  private RadioGroup idlePolicies;
   private TextView brightnessLabel;
   private TextView temperatureLabel;
   private TextView contrastLabel;
   private TextView gammaLabel;
   private TextView diagnostics;
+  private TextView composerLimitations;
+  private TextView balancedModeChoice;
+  private Boolean composerBackendState;
 
   @Override
   protected void onCreate(Bundle savedInstanceState) {
@@ -44,7 +64,7 @@ public final class MainActivity extends Activity {
     setContentView(R.layout.activity_main);
 
     final RadioGroup refreshModes = findViewById(R.id.refresh_modes);
-    final RadioGroup idlePolicies = findViewById(R.id.idle_policies);
+    idlePolicies = findViewById(R.id.idle_policies);
     final RadioGroup cleanupPolicies = findViewById(R.id.cleanup_policies);
     final RadioGroup navigation = findViewById(R.id.navigation);
     final View refreshPage = findViewById(R.id.page_refresh);
@@ -53,14 +73,16 @@ public final class MainActivity extends Activity {
     final View statusPage = findViewById(R.id.page_status);
     final Switch frontlightEnabled = findViewById(R.id.frontlight_enabled);
     final Switch disableAnimations = findViewById(R.id.disable_animations);
-    final Switch clearOnSleep = findViewById(R.id.clear_on_sleep);
+    clearOnSleep = findViewById(R.id.clear_on_sleep);
     final Switch grayscale = findViewById(R.id.grayscale);
-    final Switch scrollDetection = findViewById(R.id.scroll_detection);
+    scrollDetection = findViewById(R.id.scroll_detection);
     final Switch settledQuality = findViewById(R.id.settled_quality);
     final Switch dither = findViewById(R.id.dither);
     final Spinner pageInterval = findViewById(R.id.page_interval);
-    final SeekBar contrast = findViewById(R.id.contrast);
-    final SeekBar gamma = findViewById(R.id.gamma);
+    contrast = findViewById(R.id.contrast);
+    gamma = findViewById(R.id.gamma);
+    composerLimitations = findViewById(R.id.composer_limitations);
+    balancedModeChoice = findViewById(R.id.mode_balanced);
     followAndroidBrightness = findViewById(R.id.follow_android_brightness);
     brightness = findViewById(R.id.brightness);
     temperature = findViewById(R.id.temperature);
@@ -110,6 +132,8 @@ public final class MainActivity extends Activity {
     updateTemperatureLabel();
     updateContrastLabel(contrast.getProgress() - 50);
     updateGammaLabel(gamma.getProgress() + 50);
+
+    updateBackendControls();
     updateDiagnostics();
 
     navigation.setOnCheckedChangeListener(
@@ -338,6 +362,44 @@ public final class MainActivity extends Activity {
   protected void onResume() {
     super.onResume();
     if (diagnostics != null) {
+      backendRefreshHandler.removeCallbacks(backendStateRefresh);
+      backendStateRefresh.run();
+      updateDiagnostics();
+    }
+  }
+
+  @Override
+  protected void onPause() {
+    backendRefreshHandler.removeCallbacks(backendStateRefresh);
+    super.onPause();
+  }
+
+  private void updateBackendControls() {
+    if (composerLimitations == null || idlePolicies == null) {
+      return;
+    }
+    final boolean composerBackend = isComposerBackend();
+    final boolean backendChanged =
+        composerBackendState == null ||
+        composerBackendState.booleanValue() != composerBackend;
+    if (!backendChanged) {
+      return;
+    }
+    composerBackendState = composerBackend;
+    composerLimitations.setVisibility(
+        composerBackend ? View.VISIBLE : View.GONE);
+    idlePolicies.setEnabled(!composerBackend);
+    setChildrenEnabled(idlePolicies, !composerBackend);
+    scrollDetection.setEnabled(!composerBackend);
+    clearOnSleep.setEnabled(!composerBackend);
+    contrast.setEnabled(!composerBackend);
+    gamma.setEnabled(!composerBackend);
+    contrastLabel.setEnabled(!composerBackend);
+    gammaLabel.setEnabled(!composerBackend);
+    balancedModeChoice.setText(
+        composerBackend ? R.string.balanced_explanation_composer
+                        : R.string.balanced_explanation);
+    if (diagnostics != null) {
       updateDiagnostics();
     }
   }
@@ -364,15 +426,24 @@ public final class MainActivity extends Activity {
     final View content = getLayoutInflater().inflate(
         R.layout.dialog_mode_specifications, null);
     final RadioGroup modes = content.findViewById(R.id.specification_modes);
+    final TextView intro = content.findViewById(R.id.specification_intro);
     final TextView details =
         content.findViewById(R.id.specification_details);
+    final TextView shared = content.findViewById(R.id.specification_shared);
     final String currentMode = SystemProperties.get(
         Leaf3Settings.GLOBAL_REFRESH_MODE, Leaf3Settings.MODE_BALANCED);
+    final boolean composerBackend = isComposerBackend();
 
-    details.setText(getText(specificationForMode(currentMode)));
+    details.setText(
+        getText(specificationForMode(currentMode, composerBackend)));
+    if (composerBackend) {
+      intro.setText(R.string.mode_specifications_intro_composer);
+      shared.setText(R.string.mode_specifications_shared_composer);
+    }
     selectSpecificationMode(modes, currentMode);
     modes.setOnCheckedChangeListener((group, checkedId) ->
-        details.setText(getText(specificationForId(checkedId))));
+        details.setText(
+            getText(specificationForId(checkedId, composerBackend))));
 
     new AlertDialog.Builder(this)
         .setTitle(R.string.mode_specifications)
@@ -381,42 +452,56 @@ public final class MainActivity extends Activity {
         .show();
   }
 
-  private static int specificationForId(int checkedId) {
+  private static int specificationForId(int checkedId,
+                                        boolean composerBackend) {
     if (checkedId == R.id.spec_normal) {
-      return R.string.specification_normal;
+      return composerBackend ? R.string.specification_normal_composer
+                             : R.string.specification_normal;
     }
     if (checkedId == R.id.spec_speed) {
-      return R.string.specification_speed;
+      return composerBackend ? R.string.specification_speed_composer
+                             : R.string.specification_speed;
     }
     if (checkedId == R.id.spec_a2) {
-      return R.string.specification_a2;
+      return composerBackend ? R.string.specification_a2_composer
+                             : R.string.specification_a2;
     }
     if (checkedId == R.id.spec_regal) {
-      return R.string.specification_regal;
+      return composerBackend ? R.string.specification_regal_composer
+                             : R.string.specification_regal;
     }
     if (checkedId == R.id.spec_reader) {
-      return R.string.specification_reader;
+      return composerBackend ? R.string.specification_reader_composer
+                             : R.string.specification_reader;
     }
-    return R.string.specification_balanced;
+    return composerBackend ? R.string.specification_balanced_composer
+                           : R.string.specification_balanced;
   }
 
-  private static int specificationForMode(String mode) {
+  private static int specificationForMode(String mode,
+                                          boolean composerBackend) {
     if (Leaf3Settings.MODE_NORMAL.equals(mode)) {
-      return R.string.specification_normal;
+      return composerBackend ? R.string.specification_normal_composer
+                             : R.string.specification_normal;
     }
     if (Leaf3Settings.MODE_SPEED.equals(mode)) {
-      return R.string.specification_speed;
+      return composerBackend ? R.string.specification_speed_composer
+                             : R.string.specification_speed;
     }
     if (Leaf3Settings.MODE_A2.equals(mode)) {
-      return R.string.specification_a2;
+      return composerBackend ? R.string.specification_a2_composer
+                             : R.string.specification_a2;
     }
     if (Leaf3Settings.MODE_REGAL.equals(mode)) {
-      return R.string.specification_regal;
+      return composerBackend ? R.string.specification_regal_composer
+                             : R.string.specification_regal;
     }
     if (Leaf3Settings.MODE_READER.equals(mode)) {
-      return R.string.specification_reader;
+      return composerBackend ? R.string.specification_reader_composer
+                             : R.string.specification_reader;
     }
-    return R.string.specification_balanced;
+    return composerBackend ? R.string.specification_balanced_composer
+                           : R.string.specification_balanced;
   }
 
   private static void selectSpecificationMode(RadioGroup group, String mode) {
@@ -615,7 +700,7 @@ public final class MainActivity extends Activity {
     final boolean dither =
         SystemProperties.getInt(Leaf3Settings.DITHER, 1) != 0;
 
-    diagnostics.setText(getString(
+    final String bridgeDiagnostics = getString(
         R.string.diagnostics_value,
         Leaf3Settings.modeLabel(this, effectiveMode),
         source,
@@ -646,7 +731,24 @@ public final class MainActivity extends Activity {
         averageMicros(ioctlTime, updates),
         averageMicros(gateWaitTime, updates),
         averageMicros(notifyCaptureTime, notifiedCaptures),
-        averageMicros(notifySubmitTime, notifiedSubmits)));
+        averageMicros(notifySubmitTime, notifiedSubmits));
+    final String backend = SystemProperties.get(
+        Leaf3Settings.EPDC_BACKEND_ACTIVE,
+        SystemProperties.get(Leaf3Settings.EPDC_BACKEND, "bridge"));
+    final String nativeState =
+        SystemProperties.get("sys.leaf3.stat.epdc_native_state", "inactive");
+    final StringBuilder status = new StringBuilder(getString(
+        R.string.diagnostics_backend, backend, nativeState));
+    if ("composer".equals(backend)) {
+      status.append('\n').append(getString(
+          R.string.diagnostics_native,
+          getStat("epdc_native_commands"),
+          getStat("epdc_native_pixels"),
+          getStat("epdc_native_cleanup"),
+          getStat("epdc_native_errors")));
+    }
+    status.append("\n\n").append(bridgeDiagnostics);
+    diagnostics.setText(status);
   }
 
   private static long getStat(String name) {
@@ -655,6 +757,20 @@ public final class MainActivity extends Activity {
 
   private static long averageMicros(long total, long count) {
     return count == 0 ? 0 : total / count;
+  }
+
+  private static boolean isComposerBackend() {
+    final String activeBackend =
+        SystemProperties.get(Leaf3Settings.EPDC_BACKEND_ACTIVE, "");
+    return "composer".equals(activeBackend) ||
+        (activeBackend.isEmpty() && "composer".equals(SystemProperties.get(
+            Leaf3Settings.EPDC_BACKEND, "bridge")));
+  }
+
+  private static void setChildrenEnabled(RadioGroup group, boolean enabled) {
+    for (int index = 0; index < group.getChildCount(); ++index) {
+      group.getChildAt(index).setEnabled(enabled);
+    }
   }
 
   private abstract static class SimpleSeekBarListener

@@ -32,6 +32,9 @@ final class Leaf3Settings {
   static final String DITHER = "persist.sys.leaf3.dither";
   static final String GRAYSCALE = "persist.sys.leaf3.grayscale";
   static final String CAPTURE_MODE_ACTIVE = "sys.leaf3.stat.capture_mode";
+  static final String EPDC_BACKEND = "persist.sys.leaf3.epdc_backend";
+  static final String EPDC_BACKEND_ACTIVE =
+      "sys.leaf3.stat.epdc_backend";
 
   private static final int SATURATION_GRAYSCALE = 0;
   private static final int SATURATION_FULL = 100;

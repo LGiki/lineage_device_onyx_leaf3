@@ -30,9 +30,13 @@ allow leaf3_epdc_bridge ion_device:chr_file { open read };
 
 # Read settings changed by the controls app or the ADB helper commands.
 get_prop(leaf3_epdc_bridge, leaf3_config_prop)
+set_prop(leaf3_epdc_bridge, leaf3_config_prop)
 set_prop(system_app, leaf3_config_prop)
 set_prop(shell, leaf3_config_prop)
 set_prop(leaf3_epdc_bridge, leaf3_stats_prop)
+get_prop(surfaceflinger, leaf3_config_prop)
+set_prop(surfaceflinger, leaf3_config_prop)
+set_prop(surfaceflinger, leaf3_stats_prop)
 get_prop(system_app, leaf3_stats_prop)
 get_prop(shell, leaf3_stats_prop)
 

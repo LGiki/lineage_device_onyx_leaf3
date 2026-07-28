@@ -10,6 +10,10 @@ cleanup_policy_property=persist.sys.leaf3.cleanup_policy
 content_aware_property=persist.sys.leaf3.content_aware
 scroll_detect_property=persist.sys.leaf3.scroll_detect
 capture_mode_property=persist.sys.leaf3.capture_mode
+epdc_backend_property=persist.sys.leaf3.epdc_backend
+epdc_backend_active_property=sys.leaf3.stat.epdc_backend
+epdc_native_state_property=sys.leaf3.stat.epdc_native_state
+epdc_native_blocked_property=sys.leaf3.epdc_native_blocked
 page_interval_property=persist.sys.leaf3.page_interval
 settled_quality_property=persist.sys.leaf3.settle_quality
 contrast_property=persist.sys.leaf3.contrast
@@ -29,6 +33,7 @@ usage() {
     echo "       leaf3-refresh content-aware off" >&2
     echo "       leaf3-refresh scroll-detect {on|off}" >&2
     echo "       leaf3-refresh capture {poll|notify}" >&2
+    echo "       leaf3-refresh backend {bridge|composer}" >&2
     exit 2
 }
 
@@ -162,6 +167,24 @@ case "${1:-status}" in
                 ;;
         esac
         ;;
+    backend)
+        case "${2:-}" in
+            bridge)
+                setprop "$epdc_native_blocked_property" 1
+                setprop "$epdc_backend_property" bridge
+                echo "Leaf3 EPDC backend: bridge"
+                echo "Native submission is blocked now; reboot to make bridge mode permanent"
+                ;;
+            composer)
+                setprop "$epdc_backend_property" composer
+                echo "Leaf3 EPDC backend: composer (takes effect after reboot)"
+                echo "Use 'leaf3-refresh backend bridge' for immediate safe rollback"
+                ;;
+            *)
+                usage
+                ;;
+        esac
+        ;;
     full)
         # Toggle the token so even consecutive requests are distinguishable.
         token="$(getprop "$refresh_property")"
@@ -205,6 +228,13 @@ case "${1:-status}" in
         gamma="$(getprop "$gamma_property")"
         dither="$(getprop "$dither_property")"
         active_capture_mode="$(getprop "$active_capture_mode_property")"
+        epdc_backend="$(getprop "$epdc_backend_property")"
+        epdc_backend_active="$(getprop "$epdc_backend_active_property")"
+        epdc_native_state="$(getprop "$epdc_native_state_property")"
+        epdc_native_commands="$(getprop sys.leaf3.stat.epdc_native_commands)"
+        epdc_native_pixels="$(getprop sys.leaf3.stat.epdc_native_pixels)"
+        epdc_native_cleanup="$(getprop sys.leaf3.stat.epdc_native_cleanup)"
+        epdc_native_errors="$(getprop sys.leaf3.stat.epdc_native_errors)"
         case "$mode" in
             balanced|normal|speed|a2|regal|reader) ;;
             *) mode=balanced ;;
@@ -240,12 +270,20 @@ case "${1:-status}" in
             notify|poll) ;;
             *) capture_mode=notify ;;
         esac
+        case "$epdc_backend" in
+            bridge|composer) ;;
+            *) epdc_backend=bridge ;;
+        esac
         echo "Leaf3 global refresh mode: $mode"
         echo "Active refresh override: ${active_mode:-none}"
         echo "Active refresh source: ${active_source:-default}"
         echo "Effective refresh mode: $effective_mode"
         echo "Preferred capture source: $capture_mode"
         echo "Active capture source: ${active_capture_mode:-starting}"
+        echo "Requested EPDC backend: $epdc_backend"
+        echo "Active EPDC backend: ${epdc_backend_active:-starting}"
+        echo "Composer-native state: ${epdc_native_state:-inactive}"
+        echo "Composer-native counters: commands=${epdc_native_commands:-0} pixels=${epdc_native_pixels:-0} cleanup=${epdc_native_cleanup:-0} errors=${epdc_native_errors:-0}"
         echo "Idle polling fallback policy: $idle_policy"
         echo "Ghost-cleanup policy: $cleanup_policy"
         echo "Content-aware waveform selection: $content_aware"
@@ -254,6 +292,9 @@ case "${1:-status}" in
         echo "Settled Regal quality: $settled_quality"
         echo "Tone mapping: contrast=$contrast gamma=$gamma dither=$dither"
         echo "Clear retained frame on sleep: ${clear_on_sleep:-1}"
+        if [ "$epdc_backend_active" = composer ]; then
+            echo "Composer limitations: idle capture, contrast/gamma, content analysis, scroll detection, and white clear-on-sleep are inactive"
+        fi
         ;;
     *)
         usage

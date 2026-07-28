@@ -177,6 +177,13 @@
                 android:text="@string/tuning_description" />
 
             <TextView
+                android:id="@+id/composer_limitations"
+                style="@style/Leaf3Description"
+                android:layout_marginTop="8dp"
+                android:text="@string/composer_limitations"
+                android:visibility="gone" />
+
+            <TextView
                 style="@style/Leaf3Eyebrow"
                 android:layout_marginTop="14dp"
                 android:text="@string/idle_capture" />

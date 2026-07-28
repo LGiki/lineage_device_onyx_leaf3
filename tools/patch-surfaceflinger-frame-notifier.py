@@ -9,9 +9,10 @@ import re
 from pathlib import Path
 
 
-PATCHER_VERSION = "4"
+PATCHER_VERSION = "6"
 
 UNIQUE_FD_INCLUDE = "#include <android-base/unique_fd.h>\n"
+LEAF3_EPDC_INCLUDE = '#include "Leaf3EpdcController.h"\n'
 PROPERTIES_INCLUDE = "#include <android-base/properties.h>\n"
 FCNTL_INCLUDE = "#include <fcntl.h>\n"
 ERRNO_INCLUDE = "#include <errno.h>\n"
@@ -24,6 +25,8 @@ constexpr int32_t kLeaf3FrameNotifierVersion = 2;
 constexpr int32_t kLeaf3FrameNotifierUnregister = 0;
 constexpr int32_t kLeaf3FrameNotifierRegister = 1;
 constexpr int32_t kLeaf3FrameNotifierTakeDamage = 2;
+constexpr int32_t kLeaf3FrameNotifierRequestFullRefresh = 3;
+constexpr int32_t kLeaf3FrameNotifierBlockAndWait = 4;
 
 std::mutex gLeaf3FrameNotifierMutex;
 base::unique_fd gLeaf3FrameNotifierFd;
@@ -71,15 +74,36 @@ status_t SurfaceFlinger::onTransact(uint32_t code, const Parcel& data, Parcel* r
         }
 
         const int32_t command = data.readInt32();
-        if (command == kLeaf3FrameNotifierTakeDamage) {
-            std::lock_guard<std::mutex> lock(gLeaf3FrameNotifierMutex);
+        if (command == kLeaf3FrameNotifierBlockAndWait) {
+            Leaf3EpdcController::get().blockAndWaitForIdle();
             if (reply != nullptr) {
-                reply->writeInt32(gLeaf3FrameDamageValid ? 1 : 0);
-                if (gLeaf3FrameDamageValid) {
-                    reply->writeInt32(gLeaf3FrameDamage.left);
-                    reply->writeInt32(gLeaf3FrameDamage.top);
-                    reply->writeInt32(gLeaf3FrameDamage.right);
-                    reply->writeInt32(gLeaf3FrameDamage.bottom);
+                reply->writeInt32(NO_ERROR);
+            }
+            return NO_ERROR;
+        }
+        if (command == kLeaf3FrameNotifierRequestFullRefresh) {
+            Leaf3EpdcController::get().requestFullRefresh();
+            if (reply != nullptr) {
+                reply->writeInt32(NO_ERROR);
+            }
+            return NO_ERROR;
+        }
+        if (command == kLeaf3FrameNotifierTakeDamage) {
+            Rect damage;
+            bool damageValid =
+                    Leaf3EpdcController::get().takeNotifierDamage(&damage);
+            std::lock_guard<std::mutex> lock(gLeaf3FrameNotifierMutex);
+            if (!damageValid && gLeaf3FrameDamageValid) {
+                damage = gLeaf3FrameDamage;
+                damageValid = true;
+            }
+            if (reply != nullptr) {
+                reply->writeInt32(damageValid ? 1 : 0);
+                if (damageValid) {
+                    reply->writeInt32(damage.left);
+                    reply->writeInt32(damage.top);
+                    reply->writeInt32(damage.right);
+                    reply->writeInt32(damage.bottom);
                 }
             }
             gLeaf3FrameDamageValid = false;
@@ -134,6 +158,67 @@ status_t SurfaceFlinger::onTransact(uint32_t code, const Parcel& data, Parcel* r
                                     uint32_t flags) {
     status_t credentialCheck = CheckTransactCodeCredentials(code);
 """
+
+PREVIOUS_DRAIN_NOTIFIER_STATE = NOTIFIER_STATE.replace(
+    "constexpr int32_t kLeaf3FrameNotifierBlockAndWait = 4;\n", ""
+)
+PREVIOUS_DRAIN_TRANSACTION_HOOK = TRANSACTION_HOOK.replace(
+    """\
+        if (command == kLeaf3FrameNotifierBlockAndWait) {
+            Leaf3EpdcController::get().blockAndWaitForIdle();
+            if (reply != nullptr) {
+                reply->writeInt32(NO_ERROR);
+            }
+            return NO_ERROR;
+        }
+""",
+    "",
+)
+PREVIOUS_NOTIFIER_STATE = PREVIOUS_DRAIN_NOTIFIER_STATE.replace(
+    "constexpr int32_t kLeaf3FrameNotifierRequestFullRefresh = 3;\n", ""
+)
+PREVIOUS_TRANSACTION_HOOK = PREVIOUS_DRAIN_TRANSACTION_HOOK.replace(
+    """\
+        if (command == kLeaf3FrameNotifierRequestFullRefresh) {
+            Leaf3EpdcController::get().requestFullRefresh();
+            if (reply != nullptr) {
+                reply->writeInt32(NO_ERROR);
+            }
+            return NO_ERROR;
+        }
+""",
+    "",
+).replace(
+    """\
+            Rect damage;
+            bool damageValid =
+                    Leaf3EpdcController::get().takeNotifierDamage(&damage);
+            std::lock_guard<std::mutex> lock(gLeaf3FrameNotifierMutex);
+            if (!damageValid && gLeaf3FrameDamageValid) {
+                damage = gLeaf3FrameDamage;
+                damageValid = true;
+            }
+            if (reply != nullptr) {
+                reply->writeInt32(damageValid ? 1 : 0);
+                if (damageValid) {
+                    reply->writeInt32(damage.left);
+                    reply->writeInt32(damage.top);
+                    reply->writeInt32(damage.right);
+                    reply->writeInt32(damage.bottom);
+                }
+""",
+    """\
+            std::lock_guard<std::mutex> lock(gLeaf3FrameNotifierMutex);
+            if (reply != nullptr) {
+                reply->writeInt32(gLeaf3FrameDamageValid ? 1 : 0);
+                if (gLeaf3FrameDamageValid) {
+                    reply->writeInt32(gLeaf3FrameDamage.left);
+                    reply->writeInt32(gLeaf3FrameDamage.top);
+                    reply->writeInt32(gLeaf3FrameDamage.right);
+                    reply->writeInt32(gLeaf3FrameDamage.bottom);
+                }
+""",
+)
 
 LEGACY_NOTIFIER_STATE = """\
 constexpr uint32_t kLeaf3FrameNotifierTransaction = 1037;
@@ -353,6 +438,11 @@ def patch_display_damage(text: str) -> str:
                 (dirty_match, composition_call.group(1))
             )
 
+    if len(composition_candidates) == 0 and LEAF3_EPDC_INCLUDE in text:
+        # Current LineageOS 18.1 owns the dirty region in CompositionEngine.
+        # The composer EPDC integration records that same region before the
+        # final present, and the transaction above consumes it atomically.
+        return text
     if len(composition_candidates) != 1:
         raise ValueError(
             "expected exactly one dirtyRegion passed to doDisplayComposition "
@@ -394,6 +484,7 @@ def patched(text: str) -> bool:
         marker in text
         for marker in (
             UNIQUE_FD_INCLUDE,
+            LEAF3_EPDC_INCLUDE,
             FCNTL_INCLUDE,
             UNISTD_INCLUDE,
             NOTIFIER_STATE,
@@ -402,13 +493,16 @@ def patched(text: str) -> bool:
             POST_FRAME_HOOK,
         )
     )
-    return common_patch_present and all(
+    legacy_damage_present = all(
         marker in text
         for marker in (
             "const Rect damage = dirtyRegion.getBounds();",
             "gLeaf3FrameDamageValid = true;",
             "std::max(gLeaf3FrameDamage.bottom, damage.bottom);",
         )
+    )
+    return common_patch_present and (
+        legacy_damage_present or "takeNotifierDamage(&damage)" in text
     )
 
 
@@ -429,6 +523,69 @@ def main() -> int:
         print(f"{path}: Leaf3 frame notifier is present")
         return 0
     if (
+        PREVIOUS_DRAIN_NOTIFIER_STATE in text
+        and PREVIOUS_DRAIN_TRANSACTION_HOOK in text
+        and POST_FRAME_HOOK in text
+        and CREDENTIAL_HOOK in text
+    ):
+        if args.check:
+            parser.error(
+                f"{path}: Leaf3 frame notifier needs native-drain support"
+            )
+        try:
+            text = replace_once(
+                text,
+                PREVIOUS_DRAIN_NOTIFIER_STATE,
+                NOTIFIER_STATE,
+                "previous drain notifier state",
+            )
+            text = replace_once(
+                text,
+                PREVIOUS_DRAIN_TRANSACTION_HOOK,
+                TRANSACTION_HOOK,
+                "previous drain notifier transaction",
+            )
+        except ValueError as error:
+            parser.error(f"{path}: {error}")
+        path.write_text(text)
+        print(f"{path}: added composer-native drain requests")
+        return 0
+    if (
+        PREVIOUS_NOTIFIER_STATE in text
+        and PREVIOUS_TRANSACTION_HOOK in text
+        and POST_FRAME_HOOK in text
+        and CREDENTIAL_HOOK in text
+    ):
+        if args.check:
+            parser.error(
+                f"{path}: Leaf3 frame notifier needs composer-refresh support"
+            )
+        try:
+            text = replace_once(
+                text,
+                UNIQUE_FD_INCLUDE,
+                UNIQUE_FD_INCLUDE
+                + ("" if LEAF3_EPDC_INCLUDE in text else LEAF3_EPDC_INCLUDE),
+                "Leaf3 unique-fd include",
+            )
+            text = replace_once(
+                text,
+                PREVIOUS_NOTIFIER_STATE,
+                NOTIFIER_STATE,
+                "previous notifier state",
+            )
+            text = replace_once(
+                text,
+                PREVIOUS_TRANSACTION_HOOK,
+                TRANSACTION_HOOK,
+                "previous notifier transaction",
+            )
+        except ValueError as error:
+            parser.error(f"{path}: {error}")
+        path.write_text(text)
+        print(f"{path}: added composer-native full-refresh requests")
+        return 0
+    if (
         LEGACY_NOTIFIER_STATE in text
         and LEGACY_TRANSACTION_HOOK in text
         and POST_FRAME_HOOK in text
@@ -437,6 +594,13 @@ def main() -> int:
         if args.check:
             parser.error(f"{path}: legacy Leaf3 frame notifier needs upgrading")
         try:
+            text = replace_once(
+                text,
+                UNIQUE_FD_INCLUDE,
+                UNIQUE_FD_INCLUDE
+                + ("" if LEAF3_EPDC_INCLUDE in text else LEAF3_EPDC_INCLUDE),
+                "legacy Leaf3 unique-fd include",
+            )
             text = replace_once(
                 text,
                 LEGACY_NOTIFIER_STATE,
@@ -473,7 +637,9 @@ def main() -> int:
         text = replace_once(
             text,
             PROPERTIES_INCLUDE,
-            PROPERTIES_INCLUDE + UNIQUE_FD_INCLUDE,
+            PROPERTIES_INCLUDE
+            + UNIQUE_FD_INCLUDE
+            + ("" if LEAF3_EPDC_INCLUDE in text else LEAF3_EPDC_INCLUDE),
             "android-base properties include",
         )
         text = replace_once(

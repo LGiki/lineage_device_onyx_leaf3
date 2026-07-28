@@ -152,6 +152,8 @@ constexpr int32_t kLeaf3FrameNotifierVersion = 2;
 constexpr int32_t kLeaf3FrameNotifierUnregister = 0;
 constexpr int32_t kLeaf3FrameNotifierRegister = 1;
 constexpr int32_t kLeaf3FrameNotifierTakeDamage = 2;
+constexpr int32_t kLeaf3FrameNotifierRequestFullRefresh = 3;
+constexpr int32_t kLeaf3FrameNotifierBlockAndWait = 4;
 // ONYX changes waveform as soon as a drag crosses Android's touch slop. Keep
 // the raw-input gesture active briefly after the last movement so a released
 // fling stays fast, and allow row hashes to extend an established fling.
@@ -178,6 +180,10 @@ constexpr char kSettledQualityProperty[] = "persist.sys.leaf3.settle_quality";
 constexpr char kContrastProperty[] = "persist.sys.leaf3.contrast";
 constexpr char kGammaProperty[] = "persist.sys.leaf3.gamma";
 constexpr char kDitherProperty[] = "persist.sys.leaf3.dither";
+constexpr char kEpdcBackendProperty[] = "persist.sys.leaf3.epdc_backend";
+constexpr char kEpdcNativeBlockedProperty[] = "sys.leaf3.epdc_native_blocked";
+constexpr char kEpdcNativeStateProperty[] = "sys.leaf3.stat.epdc_native_state";
+constexpr char kEpdcActiveBackendProperty[] = "sys.leaf3.stat.epdc_backend";
 constexpr char kTouchInputName[] = "cyttsp5_mt";
 
 // Damage is tracked on a tile grid. 32 pixels keeps every rectangle edge
@@ -533,10 +539,13 @@ public:
     settings_.interactive = parseInteger(interactive, 1) != 0;
     // The virtual-display stream remains quarantined. "notify" retains
     // ScreenshotClient capture and changes only how SurfaceFlinger wakes it.
+    // Old installations may retain the quarantined "stream" value. Treat
+    // every value except an explicit "poll" as the safe notification path,
+    // matching the CLI's default normalization and new-install property.
     settings_.capture_mode =
-        std::string(propertyValue(capture_mode, "notify")) == "notify"
-            ? CaptureMode::kNotify
-            : CaptureMode::kPoll;
+        std::string(propertyValue(capture_mode, "notify")) == "poll"
+            ? CaptureMode::kPoll
+            : CaptureMode::kNotify;
     settings_.frontlight_enabled = parseInteger(frontlight_enabled, 1) != 0;
     settings_.android_brightness = std::clamp(
         parseInteger(android_brightness, 128), 0, kAndroidBrightnessMax);
@@ -1236,7 +1245,8 @@ public:
                static_cast<int32_t>(rect.right),
                static_cast<int32_t>(rect.bottom)),
           rect.right - rect.left, rect.bottom - rect.top,
-          /*useIdentityTransform=*/false, /*rotation=*/0, &buffer);
+          /*useIdentityTransform=*/false, android::ui::Rotation::Rotation0,
+          &buffer);
     } else {
       status = ScreenshotClient::capture(*display_id_, &dataspace, &buffer);
     }
@@ -2708,11 +2718,158 @@ std::unique_ptr<FrameSource> startFrameSource(CaptureMode mode,
   return screenshot;
 }
 
+status_t requestComposerCommand(int32_t command) {
+  const sp<IBinder> surface_flinger =
+      android::defaultServiceManager()->checkService(
+          android::String16("SurfaceFlinger"));
+  if (surface_flinger == nullptr) {
+    return android::NAME_NOT_FOUND;
+  }
+
+  android::Parcel data;
+  android::Parcel reply;
+  data.writeInterfaceToken(android::String16("android.ui.ISurfaceComposer"));
+  data.writeInt32(kLeaf3FrameNotifierVersion);
+  data.writeInt32(command);
+  const status_t status =
+      surface_flinger->transact(kLeaf3FrameNotifierTransaction, data, &reply);
+  return status == NO_ERROR ? static_cast<status_t>(reply.readInt32()) : status;
+}
+
+status_t requestComposerFullRefresh() {
+  return requestComposerCommand(kLeaf3FrameNotifierRequestFullRefresh);
+}
+
+bool blockComposerAndWaitForIdle() {
+  const status_t status =
+      requestComposerCommand(kLeaf3FrameNotifierBlockAndWait);
+  if (status == NO_ERROR) {
+    return true;
+  }
+  if (status == android::NAME_NOT_FOUND || status == android::DEAD_OBJECT) {
+    // A dead SurfaceFlinger cannot have a live native submission. The boot
+    // block property prevents its replacement from enabling the native path.
+    return true;
+  }
+  ALOGE("could not confirm composer-native EPDC idle state: %d; "
+        "direct-EBC fallback remains inhibited",
+        status);
+  return false;
+}
+
+bool waitForPropertyChange(uint32_t *serial, int timeout_seconds) {
+  timespec timeout = {timeout_seconds, 0};
+  uint32_t next = *serial;
+  if (!__system_property_wait(nullptr, *serial, &next, &timeout)) {
+    return false;
+  }
+  *serial = next;
+  return true;
+}
+
+// Composer-native mode still needs the ONYX frontlight bridge, but it must not
+// touch /dev/ebc or capture the display. Returning false requests a one-way
+// fallback to the existing direct-EBC loop for the remainder of this boot.
+bool runComposerSupportLoop() {
+  SettingsCache settings_cache;
+  FrontlightBridge frontlight;
+  Settings settings = settings_cache.read();
+  std::string full_refresh_token = settings.full_refresh_token;
+  bool was_interactive = settings.interactive;
+  uint32_t serial = __system_property_area_serial();
+  const int64_t ready_deadline_us = monotonicMicros() + 5000000;
+  bool ready = false;
+  bool warned_sleep_clear = false;
+
+  for (;;) {
+    settings = settings_cache.read();
+    frontlight.update(settings, settings.interactive);
+
+    const bool blocked =
+        android::base::GetBoolProperty(kEpdcNativeBlockedProperty, false);
+    const std::string state =
+        android::base::GetProperty(kEpdcNativeStateProperty, "probing");
+    if (blocked || state == "failed" || state == "unsupported") {
+      android::base::SetProperty(kEpdcNativeBlockedProperty, "1");
+      if (!blockComposerAndWaitForIdle()) {
+        (void)waitForPropertyChange(&serial, 1);
+        continue;
+      }
+      android::base::SetProperty(kEpdcActiveBackendProperty, "bridge-fallback");
+      ALOGE("composer-native EPDC is %s; entering direct-EBC fallback",
+            blocked ? "blocked" : state.c_str());
+      return false;
+    }
+    if (!ready && state == "ready") {
+      ready = true;
+      android::base::SetProperty(kEpdcActiveBackendProperty, "composer");
+      ALOGI("EPDC backend: composer-native (frontlight-only bridge)");
+    }
+    if (!ready && monotonicMicros() >= ready_deadline_us) {
+      android::base::SetProperty(kEpdcNativeBlockedProperty, "1");
+      ALOGE("composer-native EPDC readiness timed out; blocking native path");
+      continue;
+    }
+
+    if (ready && settings.full_refresh_token != full_refresh_token) {
+      full_refresh_token = settings.full_refresh_token;
+      const status_t status = requestComposerFullRefresh();
+      if (status != NO_ERROR) {
+        ALOGE("composer full-refresh request failed: %d", status);
+        android::base::SetProperty(kEpdcNativeBlockedProperty, "1");
+        continue;
+      }
+    }
+    if (ready && settings.interactive && !was_interactive) {
+      const status_t status = requestComposerFullRefresh();
+      if (status != NO_ERROR) {
+        ALOGE("composer wake refresh request failed: %d", status);
+        android::base::SetProperty(kEpdcNativeBlockedProperty, "1");
+        continue;
+      }
+    }
+    was_interactive = settings.interactive;
+    if (ready && settings.clear_on_sleep && !warned_sleep_clear) {
+      ALOGW("clear-on-sleep is unavailable in composer-native mode; "
+            "the retained panel image will remain");
+      warned_sleep_clear = true;
+    }
+
+    if (!ready) {
+      (void)waitForPropertyChange(&serial, 1);
+    } else if (!settings.interactive) {
+      android::base::WaitForProperty(kInteractiveProperty, "1");
+      serial = __system_property_area_serial();
+    } else {
+      uint32_t next = serial;
+      if (__system_property_wait(nullptr, serial, &next, nullptr)) {
+        serial = next;
+      }
+    }
+  }
+}
+
 } // namespace
 
 int main() {
   ProcessState::self()->setThreadPoolMaxThreadCount(4);
   ProcessState::self()->startThreadPool();
+
+  const bool composer_requested =
+      android::base::GetProperty(kEpdcBackendProperty, "bridge") == "composer";
+  if (composer_requested) {
+    (void)runComposerSupportLoop();
+  } else if (android::base::GetBoolProperty(kEpdcNativeBlockedProperty,
+                                            false)) {
+    // A service restart can observe the persistent bridge selection after an
+    // emergency rollback. Reconfirm the native writer is drained before this
+    // new process opens /dev/ebc.
+    while (!blockComposerAndWaitForIdle()) {
+      sleep(1);
+    }
+  }
+  android::base::SetProperty(kEpdcActiveBackendProperty,
+                             composer_requested ? "bridge-fallback" : "bridge");
 
   Waiter waiter;
   std::atomic<int64_t> last_touch_us{0};

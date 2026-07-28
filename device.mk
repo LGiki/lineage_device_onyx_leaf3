@@ -53,6 +53,7 @@ PRODUCT_PACKAGES += \
 PRODUCT_SYSTEM_DEFAULT_PROPERTIES += \
     ro.board.platform=bengal \
     ro.virtual_ab.enabled=true \
+    persist.sys.leaf3.epdc_backend=bridge \
     persist.sys.leaf3.capture_mode=notify \
     persist.sys.leaf3.page_interval=10 \
     persist.sys.leaf3.settle_quality=1 \

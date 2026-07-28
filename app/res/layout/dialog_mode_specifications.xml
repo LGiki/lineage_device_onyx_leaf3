@@ -9,6 +9,7 @@
     android:paddingBottom="4dp">
 
     <TextView
+        android:id="@+id/specification_intro"
         style="@style/Leaf3Description"
         android:text="@string/mode_specifications_intro" />
 
@@ -63,6 +64,7 @@
         android:textSize="14sp" />
 
     <TextView
+        android:id="@+id/specification_shared"
         style="@style/Leaf3Description"
         android:layout_marginTop="12dp"
         android:text="@string/mode_specifications_shared" />

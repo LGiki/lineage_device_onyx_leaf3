@@ -35,6 +35,9 @@ following safe optimizations are already present:
   edge glow, and navigation-bar scrims.
 - Optional global grayscale and user-selected waveform profiles.
 - A 100 ms minimum interval between EBC ioctls.
+- An opt-in composer-native EPDC backend that attaches damage and waveform
+  metadata to the matching HWC frame without screenshot readback. The
+  direct-EBC bridge remains the default and automatic failure fallback.
 
 Virtual-display capture and content-aware direct-EBC waveform selection remain
 quarantined because both caused crashes under composition or scrolling load.
@@ -51,7 +54,7 @@ quarantined because both caused crashes under composition or scrolling load.
 | 5 | Validation | Add per-tile update-aged regional ghost cleanup | Medium |
 | 5A | Implemented, hardware validation required | Coalesce to the newest frame before EBC submission | Low to medium |
 | 5B | Implemented, hardware validation required | Port stock reader refresh policy and tone controls | Low to medium |
-| 6 | Research | Port the stock composer-native EPDC protocol | High |
+| 6 | Implemented, hardware validation required | Port the stock composer-native EPDC protocol | High |
 | 7 | Research | Expose stock-style per-surface E-Ink controls | High |
 
 ### Phase 1: SurfaceFlinger frame notification
@@ -185,22 +188,70 @@ contrast/gamma extremes, and dithering both enabled and disabled.
 
 ### Phase 6: Stock composer-native EPDC protocol
 
-Reverse engineer and implement the ONYX `CommitEpdc` command used between
-SurfaceFlinger and the preserved Qualcomm composer service. Confirm the exact
-command opcode, header and batch layout, coordinate convention, waveform
-values, and queue lifetime before sending any command on hardware.
+The stock ABI has been recovered and implemented in a strict LineageOS 18.1
+framework patch. The preserved QTI composer client is used only when its HIDL
+interface chain contains
+`vendor.qti.hardware.display.composer@3.0::IQtiComposerClient`.
 
-This work requires coordinated framework, `libgui`, HWC2 command-writer, and
-graphics-common changes. It must be feature-gated, match the preserved vendor
-ABI exactly, and never run simultaneously with bridge-driven EBC submission.
-A boot property must provide an immediate rollback to the known-good bridge.
+`CommitEpdc` uses command opcode `0x08020000`. Its 16-bit command length is
+`1 + 5 * update_count` words. The payload is a 32-bit update count followed by
+one to eight records of:
 
-Only this composer-native path should reconsider:
+```text
+left, top, right, bottom, mode
+```
 
-- Multiple panel update rectangles in one vendor-supported batch.
-- Content-aware per-region waveform and dithering.
-- Eliminating screenshot readback entirely.
-- Vendor-native update scheduling and synchronization.
+Coordinates use exclusive right and bottom edges. The implemented stock mode
+values are DU `1`, GC16 `2`, ANIM `4`, AUTO `5`, REGAL `6`, full-update flag
+`0x20`, and dither flag `0x100`. Host tests lock the single-record and maximum
+eight-record serialization, including the encoded header lengths. They also
+compile and execute the production policy header to cover timer-only presents,
+racing real damage, live cleanup-policy deadlines, and private-command
+classification.
+
+CompositionEngine preserves the physical display's dirty region before it is
+cleared. HWC2 queues the EPDC batch immediately before `PRESENT_DISPLAY`, so
+the private command and the corresponding frame execute in one composer
+command buffer. Damage with at most eight rectangles remains a native batch;
+more complex damage safely collapses to its bounding rectangle. Virtual
+displays never receive the command.
+
+The backend is boot-latched with `persist.sys.leaf3.epdc_backend`. `bridge`
+remains the shipping default. `composer` removes screenshot capture, pixel
+comparison, EBC buffer copies, and direct EBC ioctls from the display path.
+Native submission and its timer worker remain inactive until the backend is
+requested, the QTI capability is confirmed, and SurfaceFlinger has installed
+its refresh callback. Immediate timer deadlines remain fixed after arming so
+partial startup cannot spin while holding the controller mutex.
+The bridge service stays alive only for frontlight and fallback coordination.
+If the QTI descriptor is absent, command execution fails, or presentation
+fails after a native command is queued, SurfaceFlinger permanently blocks
+native submission for that boot and the service starts the known-good
+direct-EBC bridge. `leaf3-refresh backend bridge` also blocks new native
+submission immediately, drains any admitted present, and observes the 100 ms
+EPDC safety interval before direct EBC starts. Selecting composer requires a
+reboot so both writers can never run concurrently.
+
+Native policy currently supports Balanced/Normal AUTO, Speed DU, A2 ANIM,
+Regal with an optional settled pass, Reader DU with interval GC16, dithering,
+and bounded per-tile regional cleanup. Screenshot-only behavior—automatic
+touch/row-hash scrolling, contrast/gamma staging, idle capture policy, and a
+white clear-on-sleep frame—is deliberately unavailable and is marked disabled
+in Leaf3 Controls. Native Reader therefore uses DU during continuous scrolling
+until Phase 7 provides per-surface motion hints.
+
+Hardware validation must confirm:
+
+- The vendor accepts single and eight-record batches without HWC validation,
+  command-parser, or presentation errors.
+- Damage coordinates cover every changed pixel in rotation and both
+  composition paths.
+- Rapid page turns display the newest committed frame without a duplicate
+  direct-EBC submission.
+- Unsupported capability and injected command failure switch to the bridge
+  once and keep the panel usable.
+- Manual GC16, interval cleanup, settled Regal, suspend/wake, and the
+  `backend bridge` emergency rollback remain reliable.
 
 ### Phase 7: Stock-style application and view controls
 
