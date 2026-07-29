@@ -168,7 +168,10 @@ Error Composer::presentDisplay(Display display, int* outPresentFence)
                 for marker in patcher.REQUIRED_MARKERS[composer_path]
             )
         )
-        self.assertIn("constexpr size_t kMaximumBatch = 8", controller)
+        self.assertIn(
+            "constexpr size_t kMaximumBatch = kLeaf3MaximumUpdates",
+            controller,
+        )
         self.assertIn(
             "if (rectArea(candidate) > maximumArea)",
             controller,
@@ -211,6 +214,14 @@ Error Composer::presentDisplay(Display display, int* outPresentFence)
         self.assertIn(
             "requestComposerCommand(kLeaf3FrameNotifierBlockAndWait)",
             bridge,
+        )
+        self.assertIn(
+            "damage.intersectsDirty(*frame.transient_hint)",
+            bridge,
+        )
+        self.assertIn(
+            "leaf3TransientHintAuthorized(mImpl->transientUid, activeUid)",
+            controller,
         )
         self.assertIn(
             "else if (!settings.interactive)",
@@ -345,6 +356,45 @@ int main() {
             !shouldActivateLeaf3Controller(true, true, false, false, false));
     static_assert(isLeaf3CommitEpdcCommand(kLeaf3CommitEpdcCommand));
     static_assert(!isLeaf3CommitEpdcCommand(0x08010000));
+    static_assert(leaf3TransientHintAuthorized(10123, 10123));
+    static_assert(!leaf3TransientHintAuthorized(10123, 10124));
+    static_assert(!leaf3TransientHintAuthorized(-1, -1));
+
+    const Leaf3PolicyRect separatedDamage[] = {
+        {0, 0, 100, 10},
+        {0, 90, 100, 100},
+    };
+    const auto separated = splitLeaf3TransientDamage(
+            separatedDamage, 2, Leaf3PolicyRect{0, 20, 100, 80});
+    if (separated.overflow || separated.normalCount != 2 ||
+        separated.transientCount != 0) return 9;
+
+    const Leaf3PolicyRect fullDamage[] = {{0, 0, 100, 100}};
+    const auto partitioned = splitLeaf3TransientDamage(
+            fullDamage, 1, Leaf3PolicyRect{20, 20, 80, 80});
+    if (partitioned.overflow || partitioned.normalCount != 4 ||
+        partitioned.transientCount != 1) return 10;
+    uint64_t partitionedArea = 0;
+    for (size_t index = 0; index < partitioned.normalCount; ++index) {
+        const auto& rect = partitioned.normal[index];
+        partitionedArea += static_cast<uint64_t>(rect.right - rect.left) *
+                static_cast<uint64_t>(rect.bottom - rect.top);
+    }
+    for (size_t index = 0; index < partitioned.transientCount; ++index) {
+        const auto& rect = partitioned.transient[index];
+        partitionedArea += static_cast<uint64_t>(rect.right - rect.left) *
+                static_cast<uint64_t>(rect.bottom - rect.top);
+    }
+    if (partitionedArea != 10000) return 11;
+
+    const Leaf3PolicyRect overflowingDamage[] = {
+        {0, 0, 10, 10}, {10, 0, 20, 10}, {20, 0, 30, 10},
+        {30, 0, 40, 10}, {40, 0, 50, 10}, {50, 0, 60, 10},
+        {60, 0, 70, 10}, {70, 0, 80, 10}, {80, 0, 90, 10},
+    };
+    const auto overflowing = splitLeaf3TransientDamage(
+            overflowingDamage, 9, Leaf3PolicyRect{0, 20, 100, 30});
+    if (!overflowing.overflow) return 12;
 
     Leaf3CleanupSchedule cleanup;
     cleanup.noteActivity(1000000000);

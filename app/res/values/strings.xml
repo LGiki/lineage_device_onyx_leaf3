@@ -40,20 +40,49 @@
     <string name="specification_speed_composer"><b>SPEED / DU</b>\nWaveform: DU (1) for compositor damage\nTone handling: fast, reduced grayscale fidelity\nCleanup: regional GC16 after the screen becomes quiet\nPurpose: quick text and page movement</string>
     <string name="specification_a2_composer"><b>A2 / ANIMATION</b>\nWaveform: ANIM (4) for compositor damage\nTone handling: lowest detail, strongest residual ghosting\nCleanup: regional GC16 after the screen becomes quiet\nPurpose: maximum motion responsiveness</string>
     <string name="specification_regal_composer"><b>REGAL / ANTI-GHOST</b>\nWaveform: REGAL (6); large changes use AUTO (5) first\nTone handling: grayscale with dithering and cleaner residuals\nSettled pass: REGAL after 180 ms of quiet\nPurpose: high-quality static reading pages</string>
-    <string name="specification_reader_composer"><b>READER / PAGE-TURN</b>\nWaveform: DU (1) for compositor damage; GC16 (2) at the selected large-page interval\nContinuous scrolling: remains DU; select A2 for ANIM\nPurpose: low-latency reading without cleaning after every page</string>
+    <string name="specification_reader_composer"><b>READER / PAGE-TURN</b>\nWaveform: DU (1) for compositor damage; GC16 (2) at the selected large-page interval\nTouch scrolling: moving view uses ANIM while surrounding damage remains DU\nPurpose: low-latency reading without cleaning after every page</string>
     <string name="mode_specifications_shared"><b>Shared rules</b>\n• Scroll detection overrides every mode with ANIM (4) while motion is active.\n• Large Regal changes use AUTO first and a settled REGAL pass after 180 ms of quiet.\n• “Clean screen now” submits a full-panel GC16 (2).\n• EBC submissions are at least 100 ms apart; pending notifications coalesce before capture.\n• Regional cleanup waits for 300 ms (Quality) or 600 ms (Balanced) of quiet; Reader uses its page interval instead.</string>
-    <string name="mode_specifications_shared_composer"><b>Composer-native rules</b>\n• Damage is sent as up to eight rectangles with the matching HWC present; larger batches collapse to one bounding rectangle.\n• Automatic scroll detection is unavailable; select A2 explicitly for continuous motion.\n• Large Regal changes use AUTO first and a settled REGAL pass after 180 ms of quiet.\n• “Clean screen now” submits a full-panel GC16 (2).\n• Regional cleanup waits for 300 ms (Quality) or 600 ms (Balanced) of quiet; Reader uses its page interval instead.</string>
-    <string name="profile_description">Tap an app to override the global refresh mode. Leave apps on the default unless they need a different quality or speed trade-off.</string>
+    <string name="mode_specifications_shared_composer"><b>Composer-native rules</b>\n• Damage is sent as up to eight rectangles with the matching HWC present; larger batches collapse to one bounding rectangle.\n• Touch-driven moving view regions temporarily use ANIM while surrounding damage keeps the selected waveform.\n• Large Regal changes use AUTO first and a settled REGAL pass after 180 ms of quiet.\n• “Clean screen now” submits a full-panel GC16 (2).\n• Regional cleanup waits for 300 ms (Quality) or 600 ms (Balanced) of quiet; Reader uses its page interval instead.</string>
+    <string name="profile_description">Tap an app to override its waveform, tone, cleanup interval, or animation behavior. Unset controls inherit the global values.</string>
     <string name="use_global_default">Use global default</string>
     <string name="use_global_default_explanation"><b>Use global default</b>\nFollow the mode selected on the Refresh page.</string>
     <string name="profile_row">%1$s\n%2$s</string>
+    <string name="profile_row_details">%1$s\n%2$s · %3$s</string>
+    <string name="profile_custom_tuning">custom tuning</string>
+    <string name="profile_no_custom_tuning">global tuning</string>
+    <string name="profile_refresh_mode">Refresh mode</string>
+    <string name="profile_override_contrast">Override contrast</string>
+    <string name="profile_override_gamma">Override gamma</string>
+    <string name="profile_override_dither">Override dithering</string>
+    <string name="profile_override_cleanup">Override Reader cleanup interval</string>
+    <string name="profile_filter_animations">Filter this app’s property animations</string>
+    <string name="profile_filter_animations_description">Property animations finish immediately in this foreground app. Touch-driven scrolling remains responsive through short-lived view-region ANIM hints.</string>
+    <string name="profile_reset">Reset</string>
+    <string-array name="profile_mode_labels">
+        <item>Use global refresh mode</item>
+        <item>Balanced</item>
+        <item>Normal</item>
+        <item>Speed</item>
+        <item>A2</item>
+        <item>Regal</item>
+        <item>Reader</item>
+    </string-array>
+    <string-array name="profile_page_interval_labels">
+        <item>Clean every page</item>
+        <item>Clean every 3 pages</item>
+        <item>Clean every 5 pages</item>
+        <item>Clean every 10 pages</item>
+        <item>Clean every 30 pages</item>
+        <item>Clean every 50 pages</item>
+        <item>Never clean automatically</item>
+    </string-array>
     <string name="previous_page">Previous</string>
     <string name="next_page">Next</string>
     <string name="profile_page">Page %1$d of %2$d</string>
     <string name="idle_capture">Idle capture</string>
     <string name="tuning_title">Refresh tuning</string>
     <string name="tuning_description">Fine-tune responsiveness, battery use, and how quickly fast-update ghosting is cleaned.</string>
-    <string name="composer_limitations">Composer-native EPDC is active. Idle capture, automatic scroll detection, sleep-screen rendering, contrast, and gamma belong to the screenshot bridge and are unavailable. Refresh modes, dithering, Reader cleanup, settled Regal, and regional ghost cleanup remain active.</string>
+    <string name="composer_limitations">Composer-native EPDC is active. Touch-driven moving view regions receive transient ANIM hints. Idle capture, raw-input fallback detection, sleep-screen rendering, contrast, and gamma belong to the screenshot bridge and remain unavailable. Refresh modes, dithering, Reader cleanup, settled Regal, and regional ghost cleanup remain active.</string>
     <string name="idle_description">How often the bridge checks an unchanged screen. Touch always wakes it immediately.</string>
     <string name="idle_responsive_short">Responsive\n1 sec</string>
     <string name="idle_balanced_short">Balanced\n2 sec</string>

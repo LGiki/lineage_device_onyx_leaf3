@@ -32,7 +32,6 @@ import java.io.IOException;
 import java.io.InputStream;
 
 public final class MainActivity extends Activity {
-  private static final int[] PAGE_INTERVALS = {1, 3, 5, 10, 30, 50, 0};
   private static final String CLEAR_ON_SLEEP =
       "persist.sys.leaf3.clear_on_sleep";
   private static final String SLEEP_SCREEN =
@@ -328,9 +327,10 @@ public final class MainActivity extends Activity {
           public void onItemSelected(AdapterView<?> parent, View view,
                                      int position, long id) {
             if (!loading && position >= 0 &&
-                position < PAGE_INTERVALS.length) {
+                position < Leaf3Settings.PAGE_INTERVALS.length) {
               setProperty(Leaf3Settings.PAGE_INTERVAL,
-                          Integer.toString(PAGE_INTERVALS[position]));
+                          Integer.toString(
+                              Leaf3Settings.PAGE_INTERVALS[position]));
             }
           }
 
@@ -753,8 +753,8 @@ public final class MainActivity extends Activity {
   }
 
   private static int pageIntervalIndex(int interval) {
-    for (int index = 0; index < PAGE_INTERVALS.length; ++index) {
-      if (PAGE_INTERVALS[index] == interval) {
+    for (int index = 0; index < Leaf3Settings.PAGE_INTERVALS.length; ++index) {
+      if (Leaf3Settings.PAGE_INTERVALS[index] == interval) {
         return index;
       }
     }

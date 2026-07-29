@@ -357,6 +357,19 @@ readonly NAVIGATION_BAR_INFLATER_SOURCE="$SOURCE_DIR/frameworks/base/packages/Sy
 python3 "$TARGET_DEVICE_DIR/tools/patch-systemui-leaf3-refresh-button.py" \
   "$NAVIGATION_BAR_INFLATER_SOURCE"
 
+log "Adding per-app animation filtering and transient E-Ink view hints"
+readonly FRAMEWORKS_BASE_SOURCE="$SOURCE_DIR/frameworks/base"
+readonly FRAMEWORK_EINK_PATCHER="$SCRIPT_DIR/tools/patch-framework-leaf3-eink.py"
+readonly INSTALLED_FRAMEWORK_EINK_PATCHER="$TARGET_DEVICE_DIR/tools/patch-framework-leaf3-eink.py"
+[[ -f "$FRAMEWORK_EINK_PATCHER" ]] || \
+  die "missing framework E-Ink patcher: $FRAMEWORK_EINK_PATCHER"
+cmp "$FRAMEWORK_EINK_PATCHER" "$INSTALLED_FRAMEWORK_EINK_PATCHER" || \
+  die "installed framework E-Ink patcher differs from $FRAMEWORK_EINK_PATCHER"
+python3 "$FRAMEWORK_EINK_PATCHER" --version
+python3 "$TARGET_DEVICE_DIR/tools/test-framework-leaf3-eink.py"
+python3 "$FRAMEWORK_EINK_PATCHER" \
+  "$FRAMEWORKS_BASE_SOURCE"
+
 log "Adding the Leaf3 SurfaceFlinger notifier and composer EPDC transport"
 readonly FRAMEWORKS_NATIVE_SOURCE="$SOURCE_DIR/frameworks/native"
 readonly SURFACEFLINGER_SOURCE="$SOURCE_DIR/frameworks/native/services/surfaceflinger/SurfaceFlinger.cpp"
@@ -379,6 +392,7 @@ python3 "$TARGET_DEVICE_DIR/tools/test-composer-epdc-abi.py"
 python3 "$COMPOSER_EPDC_PATCHER" \
   "$FRAMEWORKS_NATIVE_SOURCE"
 python3 "$FRAME_NOTIFIER_PATCHER" --version
+python3 "$TARGET_DEVICE_DIR/tools/test-surfaceflinger-frame-notifier.py"
 python3 "$FRAME_NOTIFIER_PATCHER" \
   "$SURFACEFLINGER_SOURCE"
 
@@ -466,6 +480,8 @@ python3 "$TARGET_DEVICE_DIR/tools/patch-systemui-dark-navigation-icons.py" --che
   "$LIGHT_BAR_CONTROLLER_SOURCE"
 python3 "$TARGET_DEVICE_DIR/tools/patch-systemui-leaf3-refresh-button.py" --check \
   "$NAVIGATION_BAR_INFLATER_SOURCE"
+python3 "$FRAMEWORK_EINK_PATCHER" --check \
+  "$FRAMEWORKS_BASE_SOURCE"
 python3 "$COMPOSER_EPDC_PATCHER" --check \
   "$FRAMEWORKS_NATIVE_SOURCE"
 python3 "$FRAME_NOTIFIER_PATCHER" --check \

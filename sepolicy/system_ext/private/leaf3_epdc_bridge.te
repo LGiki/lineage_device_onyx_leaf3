@@ -42,6 +42,9 @@ set_prop(leaf3_epdc_bridge, leaf3_stats_prop)
 get_prop(surfaceflinger, leaf3_config_prop)
 set_prop(surfaceflinger, leaf3_config_prop)
 set_prop(surfaceflinger, leaf3_stats_prop)
+# Leaf3EinkHelper runs inside foreground application processes. These values
+# contain only public display policy and a package-name hash.
+get_prop(appdomain, leaf3_config_prop)
 get_prop(system_app, leaf3_stats_prop)
 get_prop(shell, leaf3_stats_prop)
 

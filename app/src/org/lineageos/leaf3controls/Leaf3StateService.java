@@ -9,6 +9,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.database.ContentObserver;
 import android.os.Handler;
 import android.os.IBinder;
@@ -49,6 +50,7 @@ public final class Leaf3StateService extends Service {
 
   private ContentObserver brightnessObserver;
   private String foregroundPackage = "";
+  private int foregroundUid = -1;
   private String temporaryPackage = "";
   private String temporaryMode = "";
 
@@ -118,6 +120,7 @@ public final class Leaf3StateService extends Service {
     }
     clearActiveRefreshMode();
     SystemProperties.set(Leaf3Settings.ACTIVE_PACKAGE, "");
+    SystemProperties.set(Leaf3Settings.ACTIVE_UID, "");
     super.onDestroy();
   }
 
@@ -175,29 +178,47 @@ public final class Leaf3StateService extends Service {
 
   private void updateForegroundPackage() {
     String packageName = "";
+    int packageUid = -1;
     try {
       final List<ActivityManager.RunningTaskInfo> tasks =
           ActivityTaskManager.getService().getTasks(1);
       if (tasks != null && !tasks.isEmpty()) {
-        final ComponentName topActivity = tasks.get(0).topActivity;
+        final ActivityManager.RunningTaskInfo task = tasks.get(0);
+        final ComponentName topActivity = task.topActivity;
         if (topActivity != null) {
           packageName = topActivity.getPackageName();
+          packageUid = getPackageManager().getPackageUidAsUser(
+              packageName, task.userId);
         }
       }
-    } catch (RemoteException | RuntimeException exception) {
+    } catch (PackageManager.NameNotFoundException | RemoteException |
+             RuntimeException exception) {
       Log.e(TAG, "Could not determine foreground package", exception);
     }
 
-    if (!packageName.equals(foregroundPackage)) {
+    final boolean packageChanged = !packageName.equals(foregroundPackage) ||
+        packageUid != foregroundUid;
+    if (packageChanged) {
       foregroundPackage = packageName;
+      foregroundUid = packageUid;
       temporaryPackage = "";
       temporaryMode = "";
-      SystemProperties.set(
-          Leaf3Settings.ACTIVE_PACKAGE,
-          foregroundPackage.isEmpty()
-              ? "" : Integer.toHexString(foregroundPackage.hashCode()));
+      // Make the transition fail closed while publishing the new profile.
+      // Framework hooks require both this token and their matching policy.
+      SystemProperties.set(Leaf3Settings.ACTIVE_PACKAGE, "");
+      SystemProperties.set(Leaf3Settings.ACTIVE_UID, "");
     }
     applyRefreshMode();
+    if (foregroundPackage.isEmpty() || foregroundUid < 0) {
+      SystemProperties.set(Leaf3Settings.ACTIVE_PACKAGE, "");
+      SystemProperties.set(Leaf3Settings.ACTIVE_UID, "");
+    } else {
+      SystemProperties.set(Leaf3Settings.ACTIVE_PACKAGE,
+                           Integer.toHexString(foregroundPackage.hashCode()));
+      // Publish authorization last so partial transitions remain denied.
+      SystemProperties.set(Leaf3Settings.ACTIVE_UID,
+                           Integer.toString(foregroundUid));
+    }
   }
 
   private void applyRefreshMode() {
@@ -205,6 +226,9 @@ public final class Leaf3StateService extends Service {
       clearActiveRefreshMode();
       return;
     }
+    final Leaf3Settings.AppProfile profile =
+        Leaf3Settings.getAppProfile(this, foregroundPackage);
+    applyProfileTuning(profile);
     if (foregroundPackage.equals(temporaryPackage) &&
         Leaf3Settings.isRefreshMode(temporaryMode)) {
       SystemProperties.set(Leaf3Settings.ACTIVE_REFRESH_MODE, temporaryMode);
@@ -212,18 +236,37 @@ public final class Leaf3StateService extends Service {
       return;
     }
 
-    final String profile =
-        Leaf3Settings.getProfile(this, foregroundPackage);
-    if (Leaf3Settings.isRefreshMode(profile)) {
-      SystemProperties.set(Leaf3Settings.ACTIVE_REFRESH_MODE, profile);
+    if (Leaf3Settings.isRefreshMode(profile.mode)) {
+      SystemProperties.set(Leaf3Settings.ACTIVE_REFRESH_MODE, profile.mode);
       SystemProperties.set(Leaf3Settings.ACTIVE_REFRESH_SOURCE, "profile");
     } else {
-      clearActiveRefreshMode();
+      SystemProperties.set(Leaf3Settings.ACTIVE_REFRESH_MODE, "");
+      SystemProperties.set(Leaf3Settings.ACTIVE_REFRESH_SOURCE, "default");
     }
+  }
+
+  private void applyProfileTuning(Leaf3Settings.AppProfile profile) {
+    setOptionalProperty(Leaf3Settings.ACTIVE_CONTRAST, profile.contrast);
+    setOptionalProperty(Leaf3Settings.ACTIVE_GAMMA, profile.gamma);
+    setOptionalProperty(Leaf3Settings.ACTIVE_DITHER, profile.dither);
+    setOptionalProperty(Leaf3Settings.ACTIVE_PAGE_INTERVAL,
+                        profile.pageInterval);
+    SystemProperties.set(Leaf3Settings.ACTIVE_ANIMATION_FILTER,
+                         profile.filterAnimations ? "1" : "");
+  }
+
+  private static void setOptionalProperty(String name, int value) {
+    SystemProperties.set(
+        name, value == Leaf3Settings.INHERIT ? "" : Integer.toString(value));
   }
 
   private void clearActiveRefreshMode() {
     SystemProperties.set(Leaf3Settings.ACTIVE_REFRESH_MODE, "");
     SystemProperties.set(Leaf3Settings.ACTIVE_REFRESH_SOURCE, "default");
+    SystemProperties.set(Leaf3Settings.ACTIVE_CONTRAST, "");
+    SystemProperties.set(Leaf3Settings.ACTIVE_GAMMA, "");
+    SystemProperties.set(Leaf3Settings.ACTIVE_DITHER, "");
+    SystemProperties.set(Leaf3Settings.ACTIVE_PAGE_INTERVAL, "");
+    SystemProperties.set(Leaf3Settings.ACTIVE_ANIMATION_FILTER, "");
   }
 }

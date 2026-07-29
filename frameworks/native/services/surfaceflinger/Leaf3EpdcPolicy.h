@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 
 namespace android {
@@ -11,6 +13,91 @@ namespace android {
 constexpr uint32_t kLeaf3CommitEpdcCommand = 0x08020000;
 constexpr int64_t kLeaf3QualityCleanupDelay = 300000000;
 constexpr int64_t kLeaf3BalancedCleanupDelay = 600000000;
+constexpr size_t kLeaf3MaximumUpdates = 8;
+
+constexpr bool leaf3TransientHintAuthorized(int32_t ownerUid,
+                                            int32_t activeUid) {
+  return ownerUid >= 0 && ownerUid == activeUid;
+}
+
+struct Leaf3PolicyRect {
+  int32_t left;
+  int32_t top;
+  int32_t right;
+  int32_t bottom;
+
+  constexpr bool empty() const { return right <= left || bottom <= top; }
+};
+
+struct Leaf3TransientDamageSplit {
+  std::array<Leaf3PolicyRect, kLeaf3MaximumUpdates> normal{};
+  std::array<Leaf3PolicyRect, kLeaf3MaximumUpdates> transient{};
+  size_t normalCount = 0;
+  size_t transientCount = 0;
+  bool overflow = false;
+};
+
+constexpr Leaf3PolicyRect intersectLeaf3Rects(const Leaf3PolicyRect &first,
+                                              const Leaf3PolicyRect &second) {
+  return Leaf3PolicyRect{
+      first.left > second.left ? first.left : second.left,
+      first.top > second.top ? first.top : second.top,
+      first.right < second.right ? first.right : second.right,
+      first.bottom < second.bottom ? first.bottom : second.bottom,
+  };
+}
+
+inline void
+appendLeaf3SplitRect(std::array<Leaf3PolicyRect, kLeaf3MaximumUpdates> *rects,
+                     size_t *count, size_t otherCount,
+                     const Leaf3PolicyRect &rect, bool *overflow) {
+  if (rect.empty() || *overflow) {
+    return;
+  }
+  if (*count + otherCount >= kLeaf3MaximumUpdates) {
+    *overflow = true;
+    return;
+  }
+  (*rects)[(*count)++] = rect;
+}
+
+inline Leaf3TransientDamageSplit
+splitLeaf3TransientDamage(const Leaf3PolicyRect *damage, size_t damageCount,
+                          const Leaf3PolicyRect &hint) {
+  Leaf3TransientDamageSplit result;
+  for (size_t index = 0; index < damageCount && !result.overflow; ++index) {
+    const Leaf3PolicyRect current = damage[index];
+    if (current.empty()) {
+      continue;
+    }
+    const Leaf3PolicyRect moving = intersectLeaf3Rects(current, hint);
+    if (moving.empty()) {
+      appendLeaf3SplitRect(&result.normal, &result.normalCount,
+                           result.transientCount, current, &result.overflow);
+      continue;
+    }
+    appendLeaf3SplitRect(
+        &result.normal, &result.normalCount, result.transientCount,
+        Leaf3PolicyRect{current.left, current.top, current.right, moving.top},
+        &result.overflow);
+    appendLeaf3SplitRect(&result.normal, &result.normalCount,
+                         result.transientCount,
+                         Leaf3PolicyRect{current.left, moving.bottom,
+                                         current.right, current.bottom},
+                         &result.overflow);
+    appendLeaf3SplitRect(
+        &result.normal, &result.normalCount, result.transientCount,
+        Leaf3PolicyRect{current.left, moving.top, moving.left, moving.bottom},
+        &result.overflow);
+    appendLeaf3SplitRect(
+        &result.normal, &result.normalCount, result.transientCount,
+        Leaf3PolicyRect{moving.right, moving.top, current.right, moving.bottom},
+        &result.overflow);
+    appendLeaf3SplitRect(&result.transient, &result.transientCount,
+                         result.normalCount, moving, &result.overflow);
+  }
+  return result;
+}
 
 enum class Leaf3CleanupPolicy {
   Quality,

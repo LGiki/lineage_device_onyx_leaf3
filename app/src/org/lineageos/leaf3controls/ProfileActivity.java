@@ -8,12 +8,16 @@ import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.graphics.drawable.Drawable;
 import android.os.Bundle;
+import android.os.SystemProperties;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.SeekBar;
+import android.widget.Spinner;
+import android.widget.Switch;
 import android.widget.TextView;
 
 import java.util.ArrayList;
@@ -84,18 +88,23 @@ public final class ProfileActivity extends Activity {
     row.setGravity(Gravity.CENTER_VERTICAL);
     row.setMinimumHeight(dp(72));
     row.setPadding(dp(16), dp(8), dp(16), dp(8));
-    row.setOnClickListener(view -> chooseMode(entry));
+    row.setOnClickListener(view -> editProfile(entry));
 
     final ImageView icon = new ImageView(this);
     icon.setImageDrawable(entry.icon);
     row.addView(icon, new LinearLayout.LayoutParams(dp(48), dp(48)));
 
-    final String profile = Leaf3Settings.getProfile(this, entry.packageName);
-    final String modeLabel = profile.isEmpty()
+    final Leaf3Settings.AppProfile profile =
+        Leaf3Settings.getAppProfile(this, entry.packageName);
+    final String modeLabel = profile.mode.isEmpty()
         ? getString(R.string.use_global_default)
-        : Leaf3Settings.modeLabel(this, profile);
+        : Leaf3Settings.modeLabel(this, profile.mode);
+    final String tuningLabel = profile.hasTuning()
+        ? getString(R.string.profile_custom_tuning)
+        : getString(R.string.profile_no_custom_tuning);
     final TextView text = new TextView(this);
-    text.setText(getString(R.string.profile_row, entry.label, modeLabel));
+    text.setText(getString(R.string.profile_row_details, entry.label,
+                           modeLabel, tuningLabel));
     text.setTextColor(0xff000000);
     text.setTextSize(18);
     text.setPadding(dp(16), 0, 0, 0);
@@ -142,35 +151,142 @@ public final class ProfileActivity extends Activity {
     }
   }
 
-  private void chooseMode(AppEntry entry) {
-    final CharSequence[] labels = {
-        getText(R.string.use_global_default_explanation),
-        getText(R.string.balanced_explanation),
-        getText(R.string.normal_explanation),
-        getText(R.string.speed_explanation),
-        getText(R.string.a2_explanation),
-        getText(R.string.regal_explanation),
-        getText(R.string.reader_explanation)
-    };
-    final String currentMode = Leaf3Settings.getProfile(this, entry.packageName);
-    int checkedItem = 0;
+  private void editProfile(AppEntry entry) {
+    final Leaf3Settings.AppProfile current =
+        Leaf3Settings.getAppProfile(this, entry.packageName);
+    final View content = getLayoutInflater().inflate(
+        R.layout.dialog_app_profile, null);
+    final Spinner mode = content.findViewById(R.id.profile_mode);
+    final Switch overrideContrast =
+        content.findViewById(R.id.profile_override_contrast);
+    final SeekBar contrast = content.findViewById(R.id.profile_contrast);
+    final Switch overrideGamma =
+        content.findViewById(R.id.profile_override_gamma);
+    final SeekBar gamma = content.findViewById(R.id.profile_gamma);
+    final TextView contrastLabel =
+        content.findViewById(R.id.profile_contrast_label);
+    final TextView gammaLabel =
+        content.findViewById(R.id.profile_gamma_label);
+    final Switch overrideDither =
+        content.findViewById(R.id.profile_override_dither);
+    final Switch dither = content.findViewById(R.id.profile_dither);
+    final Switch overrideCleanup =
+        content.findViewById(R.id.profile_override_cleanup);
+    final Spinner pageInterval =
+        content.findViewById(R.id.profile_page_interval);
+    final Switch filterAnimations =
+        content.findViewById(R.id.profile_filter_animations);
+
+    mode.setSelection(modeIndex(current.mode));
+    overrideContrast.setChecked(current.contrast != Leaf3Settings.INHERIT);
+    contrast.setProgress((current.contrast == Leaf3Settings.INHERIT
+        ? SystemProperties.getInt(Leaf3Settings.CONTRAST, 0)
+        : current.contrast) + 50);
+    setControlsEnabled(overrideContrast.isChecked(), contrast, contrastLabel);
+    overrideContrast.setOnCheckedChangeListener((button, checked) ->
+        setControlsEnabled(checked, contrast, contrastLabel));
+
+    overrideGamma.setChecked(current.gamma != Leaf3Settings.INHERIT);
+    gamma.setProgress((current.gamma == Leaf3Settings.INHERIT
+        ? SystemProperties.getInt(Leaf3Settings.GAMMA, 100)
+        : current.gamma) - 50);
+    setControlsEnabled(overrideGamma.isChecked(), gamma, gammaLabel);
+    overrideGamma.setOnCheckedChangeListener((button, checked) ->
+        setControlsEnabled(checked, gamma, gammaLabel));
+
+    overrideDither.setChecked(current.dither != Leaf3Settings.INHERIT);
+    dither.setChecked(current.dither == Leaf3Settings.INHERIT
+        ? SystemProperties.getInt(Leaf3Settings.DITHER, 1) != 0
+        : current.dither != 0);
+    dither.setEnabled(overrideDither.isChecked());
+    overrideDither.setOnCheckedChangeListener(
+        (button, checked) -> dither.setEnabled(checked));
+
+    updateToneLabels(contrast, gamma, contrastLabel, gammaLabel);
+    contrast.setOnSeekBarChangeListener(
+        new LabelSeekBarListener(() ->
+            updateToneLabels(contrast, gamma, contrastLabel, gammaLabel)));
+    gamma.setOnSeekBarChangeListener(
+        new LabelSeekBarListener(() ->
+            updateToneLabels(contrast, gamma, contrastLabel, gammaLabel)));
+
+    overrideCleanup.setChecked(
+        current.pageInterval != Leaf3Settings.INHERIT);
+    pageInterval.setSelection(pageIntervalIndex(current.pageInterval));
+    pageInterval.setEnabled(overrideCleanup.isChecked());
+    overrideCleanup.setOnCheckedChangeListener(
+        (button, checked) -> pageInterval.setEnabled(checked));
+    filterAnimations.setChecked(current.filterAnimations);
+
+    final AlertDialog dialog = new AlertDialog.Builder(this)
+        .setTitle(entry.label)
+        .setView(content)
+        .setPositiveButton(android.R.string.ok, (ignored, which) -> {
+          final Leaf3Settings.AppProfile updated =
+              new Leaf3Settings.AppProfile();
+          updated.mode = PROFILE_MODES[mode.getSelectedItemPosition()];
+          if (overrideContrast.isChecked()) {
+            updated.contrast = contrast.getProgress() - 50;
+          }
+          if (overrideGamma.isChecked()) {
+            updated.gamma = gamma.getProgress() + 50;
+          }
+          if (overrideDither.isChecked()) {
+            updated.dither = dither.isChecked() ? 1 : 0;
+          }
+          if (overrideCleanup.isChecked()) {
+            updated.pageInterval = Leaf3Settings.PAGE_INTERVALS[
+                pageInterval.getSelectedItemPosition()];
+          }
+          updated.filterAnimations = filterAnimations.isChecked();
+          saveProfile(entry.packageName, updated);
+        })
+        .setNeutralButton(R.string.profile_reset, (ignored, which) ->
+            saveProfile(entry.packageName, new Leaf3Settings.AppProfile()))
+        .setNegativeButton(android.R.string.cancel, null)
+        .create();
+    dialog.show();
+  }
+
+  private void saveProfile(String packageName,
+                           Leaf3Settings.AppProfile profile) {
+    Leaf3Settings.setAppProfile(this, packageName, profile);
+    startService(new Intent(this, Leaf3StateService.class)
+        .setAction(Leaf3StateService.ACTION_APPLY_SETTINGS));
+    renderPage();
+  }
+
+  private static int modeIndex(String currentMode) {
     for (int index = 1; index < PROFILE_MODES.length; ++index) {
       if (PROFILE_MODES[index].equals(currentMode)) {
-        checkedItem = index;
-        break;
+        return index;
       }
     }
+    return 0;
+  }
 
-    new AlertDialog.Builder(this)
-        .setTitle(entry.label)
-        .setSingleChoiceItems(labels, checkedItem, (dialog, which) -> {
-          Leaf3Settings.setProfile(this, entry.packageName,
-                                   PROFILE_MODES[which]);
-          renderPage();
-          dialog.dismiss();
-        })
-        .setNegativeButton(android.R.string.cancel, null)
-        .show();
+  private static int pageIntervalIndex(int interval) {
+    for (int index = 0; index < Leaf3Settings.PAGE_INTERVALS.length; ++index) {
+      if (Leaf3Settings.PAGE_INTERVALS[index] == interval) {
+        return index;
+      }
+    }
+    return 0;
+  }
+
+  private void updateToneLabels(SeekBar contrast, SeekBar gamma,
+                                TextView contrastLabel,
+                                TextView gammaLabel) {
+    contrastLabel.setText(
+        getString(R.string.contrast_value, contrast.getProgress() - 50));
+    gammaLabel.setText(
+        getString(R.string.gamma_value, gamma.getProgress() + 50));
+  }
+
+  private static void setControlsEnabled(boolean enabled, View... controls) {
+    for (View control : controls) {
+      control.setEnabled(enabled);
+    }
   }
 
   private int dp(int value) {
@@ -187,5 +303,26 @@ public final class ProfileActivity extends Activity {
       this.label = label;
       this.icon = icon;
     }
+  }
+
+  private static final class LabelSeekBarListener
+      implements SeekBar.OnSeekBarChangeListener {
+    private final Runnable update;
+
+    LabelSeekBarListener(Runnable update) {
+      this.update = update;
+    }
+
+    @Override
+    public void onProgressChanged(SeekBar seekBar, int progress,
+                                  boolean fromUser) {
+      update.run();
+    }
+
+    @Override
+    public void onStartTrackingTouch(SeekBar seekBar) {}
+
+    @Override
+    public void onStopTrackingTouch(SeekBar seekBar) {}
   }
 }

@@ -3,6 +3,12 @@
 mode_property=persist.sys.leaf3.refresh_mode
 active_mode_property=sys.leaf3.active_refresh_mode
 active_source_property=sys.leaf3.active_refresh_source
+active_page_interval_property=sys.leaf3.active_page_interval
+active_contrast_property=sys.leaf3.active_contrast
+active_gamma_property=sys.leaf3.active_gamma
+active_dither_property=sys.leaf3.active_dither
+active_animation_filter_property=sys.leaf3.active_animation_filter
+active_uid_property=sys.leaf3.active_uid
 refresh_property=sys.leaf3.full_refresh
 clear_on_sleep_property=persist.sys.leaf3.clear_on_sleep
 sleep_screen_property=persist.sys.leaf3.sleep_screen
@@ -219,6 +225,12 @@ case "${1:-status}" in
         mode="$(getprop "$mode_property")"
         active_mode="$(getprop "$active_mode_property")"
         active_source="$(getprop "$active_source_property")"
+        active_page_interval="$(getprop "$active_page_interval_property")"
+        active_contrast="$(getprop "$active_contrast_property")"
+        active_gamma="$(getprop "$active_gamma_property")"
+        active_dither="$(getprop "$active_dither_property")"
+        active_animation_filter="$(getprop "$active_animation_filter_property")"
+        active_uid="$(getprop "$active_uid_property")"
         clear_on_sleep="$(getprop "$clear_on_sleep_property")"
         sleep_screen="$(getprop "$sleep_screen_property")"
         idle_policy="$(getprop "$idle_policy_property")"
@@ -238,6 +250,7 @@ case "${1:-status}" in
         epdc_native_commands="$(getprop sys.leaf3.stat.epdc_native_commands)"
         epdc_native_pixels="$(getprop sys.leaf3.stat.epdc_native_pixels)"
         epdc_native_cleanup="$(getprop sys.leaf3.stat.epdc_native_cleanup)"
+        epdc_native_transient="$(getprop sys.leaf3.stat.epdc_native_transient)"
         epdc_native_errors="$(getprop sys.leaf3.stat.epdc_native_errors)"
         case "$mode" in
             balanced|normal|speed|a2|regal|reader) ;;
@@ -270,6 +283,11 @@ case "${1:-status}" in
             "") gamma=100 ;;
         esac
         [ "$dither" = 0 ] || dither=1
+        effective_page_interval="${active_page_interval:-$page_interval}"
+        effective_contrast="${active_contrast:-$contrast}"
+        effective_gamma="${active_gamma:-$gamma}"
+        effective_dither="${active_dither:-$dither}"
+        [ "$active_animation_filter" = 1 ] || active_animation_filter=0
         case "$capture_mode" in
             notify|poll) ;;
             *) capture_mode=notify ;;
@@ -287,21 +305,23 @@ case "${1:-status}" in
         echo "Requested EPDC backend: $epdc_backend"
         echo "Active EPDC backend: ${epdc_backend_active:-starting}"
         echo "Composer-native state: ${epdc_native_state:-inactive}"
-        echo "Composer-native counters: commands=${epdc_native_commands:-0} pixels=${epdc_native_pixels:-0} cleanup=${epdc_native_cleanup:-0} errors=${epdc_native_errors:-0}"
+        echo "Composer-native counters: commands=${epdc_native_commands:-0} pixels=${epdc_native_pixels:-0} cleanup=${epdc_native_cleanup:-0} transient=${epdc_native_transient:-0} errors=${epdc_native_errors:-0}"
         echo "Idle polling fallback policy: $idle_policy"
         echo "Ghost-cleanup policy: $cleanup_policy"
         echo "Content-aware waveform selection: $content_aware"
         echo "Scroll detection: $scroll_detect"
-        echo "Reader cleanup interval: $page_interval"
+        echo "Reader cleanup interval: $effective_page_interval"
         echo "Settled Regal quality: $settled_quality"
-        echo "Tone mapping: contrast=$contrast gamma=$gamma dither=$dither"
+        echo "Tone mapping: contrast=$effective_contrast gamma=$effective_gamma dither=$effective_dither"
+        echo "Foreground animation filter: $active_animation_filter"
+        echo "Foreground hint UID: ${active_uid:-none}"
         case "$sleep_screen" in
             clear|retain|image) ;;
             *) [ "$clear_on_sleep" = 0 ] && sleep_screen=retain || sleep_screen=clear ;;
         esac
         echo "Sleep screen: $sleep_screen"
         if [ "$epdc_backend_active" = composer ]; then
-            echo "Composer limitations: idle capture, contrast/gamma, content analysis, scroll detection, and sleep-screen rendering are inactive"
+            echo "Composer limitations: idle capture, contrast/gamma, content analysis, raw-input scroll detection, and sleep-screen rendering are inactive"
         fi
         ;;
     *)

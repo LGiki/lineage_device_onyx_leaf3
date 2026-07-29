@@ -8,7 +8,7 @@ import argparse
 from pathlib import Path
 
 
-PATCHER_VERSION = "6"
+PATCHER_VERSION = "7"
 
 PREVIOUS_ABSTRACT_EPDC_DAMAGE = (
     "    virtual void setLeaf3EpdcDamage(DisplayId displayId, const Region& damage,\n"

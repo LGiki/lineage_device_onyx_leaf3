@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 
 
-PATCHER_VERSION = "6"
+PATCHER_VERSION = "8"
 
 UNIQUE_FD_INCLUDE = "#include <android-base/unique_fd.h>\n"
 LEAF3_EPDC_INCLUDE = '#include "Leaf3EpdcController.h"\n'
@@ -21,12 +21,15 @@ SYS_TYPES_INCLUDE = "#include <sys/types.h>\n"
 
 NOTIFIER_STATE = """\
 constexpr uint32_t kLeaf3FrameNotifierTransaction = 1037;
-constexpr int32_t kLeaf3FrameNotifierVersion = 2;
+constexpr uint32_t kLeaf3TransientHintTransaction = 1038;
+constexpr int32_t kLeaf3FrameNotifierVersion = 3;
+constexpr int32_t kLeaf3TransientHintVersion = 1;
 constexpr int32_t kLeaf3FrameNotifierUnregister = 0;
 constexpr int32_t kLeaf3FrameNotifierRegister = 1;
 constexpr int32_t kLeaf3FrameNotifierTakeDamage = 2;
 constexpr int32_t kLeaf3FrameNotifierRequestFullRefresh = 3;
 constexpr int32_t kLeaf3FrameNotifierBlockAndWait = 4;
+constexpr char kLeaf3ActiveUidProperty[] = "sys.leaf3.active_uid";
 
 std::mutex gLeaf3FrameNotifierMutex;
 base::unique_fd gLeaf3FrameNotifierFd;
@@ -51,6 +54,18 @@ status_t SurfaceFlinger::CheckTransactCodeCredentials(uint32_t code) {
               ipc->getCallingPid(), ipc->getCallingUid());
         return PERMISSION_DENIED;
     }
+    if (code == kLeaf3TransientHintTransaction) {
+        IPCThreadState* ipc = IPCThreadState::self();
+        const uid_t callingUid = ipc->getCallingUid();
+        const int activeUid =
+                android::base::GetIntProperty(kLeaf3ActiveUidProperty, -1);
+        if (activeUid >= 0 && callingUid == static_cast<uid_t>(activeUid)) {
+            return OK;
+        }
+        ALOGE("Permission Denial: Leaf3 transient hint pid=%d, uid=%d, "
+              "active uid=%d", ipc->getCallingPid(), callingUid, activeUid);
+        return PERMISSION_DENIED;
+    }
 
 #pragma clang diagnostic push
 """
@@ -63,6 +78,38 @@ status_t SurfaceFlinger::CheckTransactCodeCredentials(uint32_t code) {
 TRANSACTION_HOOK = """\
 status_t SurfaceFlinger::onTransact(uint32_t code, const Parcel& data, Parcel* reply,
                                     uint32_t flags) {
+    if (code == kLeaf3TransientHintTransaction) {
+        const uid_t callingUid = IPCThreadState::self()->getCallingUid();
+        const status_t credentialCheck = CheckTransactCodeCredentials(code);
+        if (credentialCheck != OK) {
+            return credentialCheck;
+        }
+        CHECK_INTERFACE(ISurfaceComposer, data, reply);
+        if (data.readInt32() != kLeaf3TransientHintVersion) {
+            return BAD_VALUE;
+        }
+        const int32_t command = data.readInt32();
+        if (command == 0) {
+            Leaf3EpdcController::get().clearTransientHint();
+            return NO_ERROR;
+        }
+        if (command != 1) {
+            return BAD_VALUE;
+        }
+        const Rect region(data.readInt32(), data.readInt32(),
+                          data.readInt32(), data.readInt32());
+        const int32_t durationMs = data.readInt32();
+        if (!region.isValid() || region.isEmpty() || region.left < 0 ||
+            region.top < 0 || region.right > 16384 || region.bottom > 16384 ||
+            durationMs < 100 || durationMs > 2000) {
+            return BAD_VALUE;
+        }
+        Leaf3EpdcController::get().setTransientHint(
+                region, static_cast<nsecs_t>(durationMs) * 1000000,
+                static_cast<int32_t>(callingUid));
+        return NO_ERROR;
+    }
+
     if (code == kLeaf3FrameNotifierTransaction) {
         status_t credentialCheck = CheckTransactCodeCredentials(code);
         if (credentialCheck != OK) {
@@ -90,8 +137,10 @@ status_t SurfaceFlinger::onTransact(uint32_t code, const Parcel& data, Parcel* r
         }
         if (command == kLeaf3FrameNotifierTakeDamage) {
             Rect damage;
+            Rect transientHint;
             bool damageValid =
-                    Leaf3EpdcController::get().takeNotifierDamage(&damage);
+                    Leaf3EpdcController::get().takeNotifierDamage(
+                            &damage, &transientHint);
             std::lock_guard<std::mutex> lock(gLeaf3FrameNotifierMutex);
             if (!damageValid && gLeaf3FrameDamageValid) {
                 damage = gLeaf3FrameDamage;
@@ -104,6 +153,13 @@ status_t SurfaceFlinger::onTransact(uint32_t code, const Parcel& data, Parcel* r
                     reply->writeInt32(damage.top);
                     reply->writeInt32(damage.right);
                     reply->writeInt32(damage.bottom);
+                }
+                reply->writeInt32(transientHint.isEmpty() ? 0 : 1);
+                if (!transientHint.isEmpty()) {
+                    reply->writeInt32(transientHint.left);
+                    reply->writeInt32(transientHint.top);
+                    reply->writeInt32(transientHint.right);
+                    reply->writeInt32(transientHint.bottom);
                 }
             }
             gLeaf3FrameDamageValid = false;
@@ -152,6 +208,96 @@ status_t SurfaceFlinger::onTransact(uint32_t code, const Parcel& data, Parcel* r
 
     status_t credentialCheck = CheckTransactCodeCredentials(code);
 """
+
+PREVIOUS_V2_NOTIFIER_STATE = NOTIFIER_STATE.replace(
+    "constexpr uint32_t kLeaf3TransientHintTransaction = 1038;\n", ""
+).replace(
+    "constexpr int32_t kLeaf3FrameNotifierVersion = 3;\n"
+    "constexpr int32_t kLeaf3TransientHintVersion = 1;\n",
+    "constexpr int32_t kLeaf3FrameNotifierVersion = 2;\n",
+).replace(
+    'constexpr char kLeaf3ActiveUidProperty[] = "sys.leaf3.active_uid";\n',
+    "",
+)
+PREVIOUS_V2_CREDENTIAL_HOOK = CREDENTIAL_HOOK[
+    :CREDENTIAL_HOOK.index(
+        "    if (code == kLeaf3TransientHintTransaction) {"
+    )
+] + CREDENTIAL_HOOK[
+    CREDENTIAL_HOOK.index(
+        "\n#pragma clang diagnostic push"
+    ):
+]
+PREVIOUS_V2_TRANSACTION_HOOK = TRANSACTION_HOOK[
+    TRANSACTION_HOOK.index(
+        "status_t SurfaceFlinger::onTransact"
+    ):
+].replace(
+    """\
+    if (code == kLeaf3TransientHintTransaction) {
+        const uid_t callingUid = IPCThreadState::self()->getCallingUid();
+        const status_t credentialCheck = CheckTransactCodeCredentials(code);
+        if (credentialCheck != OK) {
+            return credentialCheck;
+        }
+        CHECK_INTERFACE(ISurfaceComposer, data, reply);
+        if (data.readInt32() != kLeaf3TransientHintVersion) {
+            return BAD_VALUE;
+        }
+        const int32_t command = data.readInt32();
+        if (command == 0) {
+            Leaf3EpdcController::get().clearTransientHint();
+            return NO_ERROR;
+        }
+        if (command != 1) {
+            return BAD_VALUE;
+        }
+        const Rect region(data.readInt32(), data.readInt32(),
+                          data.readInt32(), data.readInt32());
+        const int32_t durationMs = data.readInt32();
+        if (!region.isValid() || region.isEmpty() || region.left < 0 ||
+            region.top < 0 || region.right > 16384 || region.bottom > 16384 ||
+            durationMs < 100 || durationMs > 2000) {
+            return BAD_VALUE;
+        }
+        Leaf3EpdcController::get().setTransientHint(
+                region, static_cast<nsecs_t>(durationMs) * 1000000,
+                static_cast<int32_t>(callingUid));
+        return NO_ERROR;
+    }
+
+""",
+    "",
+).replace(
+    "            Rect transientHint;\n", ""
+).replace(
+    "                    Leaf3EpdcController::get().takeNotifierDamage(\n"
+    "                            &damage, &transientHint);",
+    "                    Leaf3EpdcController::get().takeNotifierDamage(&damage);",
+).replace(
+    """\
+                reply->writeInt32(transientHint.isEmpty() ? 0 : 1);
+                if (!transientHint.isEmpty()) {
+                    reply->writeInt32(transientHint.left);
+                    reply->writeInt32(transientHint.top);
+                    reply->writeInt32(transientHint.right);
+                    reply->writeInt32(transientHint.bottom);
+                }
+""",
+    "",
+)
+PREVIOUS_UNOWNED_TRANSACTION_HOOK = TRANSACTION_HOOK.replace(
+    "        const uid_t callingUid = IPCThreadState::self()->getCallingUid();\n",
+    "",
+    1,
+).replace(
+    "        Leaf3EpdcController::get().setTransientHint(\n"
+    "                region, static_cast<nsecs_t>(durationMs) * 1000000,\n"
+    "                static_cast<int32_t>(callingUid));",
+    "        Leaf3EpdcController::get().setTransientHint(\n"
+    "                region, static_cast<nsecs_t>(durationMs) * 1000000);",
+    1,
+)
 
 TRANSACTION_MARKER = """\
 status_t SurfaceFlinger::onTransact(uint32_t code, const Parcel& data, Parcel* reply,
@@ -502,7 +648,9 @@ def patched(text: str) -> bool:
         )
     )
     return common_patch_present and (
-        legacy_damage_present or "takeNotifierDamage(&damage)" in text
+        legacy_damage_present
+        or "Leaf3EpdcController::get().takeNotifierDamage(\n"
+           "                            &damage, &transientHint)" in text
     )
 
 
@@ -521,6 +669,62 @@ def main() -> int:
     text = path.read_text()
     if patched(text):
         print(f"{path}: Leaf3 frame notifier is present")
+        return 0
+    if (
+        NOTIFIER_STATE in text
+        and CREDENTIAL_HOOK in text
+        and PREVIOUS_UNOWNED_TRANSACTION_HOOK in text
+        and POST_FRAME_HOOK in text
+    ):
+        if args.check:
+            parser.error(
+                f"{path}: Leaf3 transient hints need UID ownership"
+            )
+        try:
+            text = replace_once(
+                text,
+                PREVIOUS_UNOWNED_TRANSACTION_HOOK,
+                TRANSACTION_HOOK,
+                "unowned transient-hint transaction",
+            )
+        except ValueError as error:
+            parser.error(f"{path}: {error}")
+        path.write_text(text)
+        print(f"{path}: bound transient E-Ink hints to caller UID")
+        return 0
+    if (
+        PREVIOUS_V2_NOTIFIER_STATE in text
+        and PREVIOUS_V2_CREDENTIAL_HOOK in text
+        and PREVIOUS_V2_TRANSACTION_HOOK in text
+        and POST_FRAME_HOOK in text
+    ):
+        if args.check:
+            parser.error(
+                f"{path}: Leaf3 frame notifier needs transient-hint support"
+            )
+        try:
+            text = replace_once(
+                text,
+                PREVIOUS_V2_NOTIFIER_STATE,
+                NOTIFIER_STATE,
+                "version-two notifier state",
+            )
+            text = replace_once(
+                text,
+                PREVIOUS_V2_CREDENTIAL_HOOK,
+                CREDENTIAL_HOOK,
+                "version-two notifier credentials",
+            )
+            text = replace_once(
+                text,
+                PREVIOUS_V2_TRANSACTION_HOOK,
+                TRANSACTION_HOOK,
+                "version-two notifier transaction",
+            )
+        except ValueError as error:
+            parser.error(f"{path}: {error}")
+        path.write_text(text)
+        print(f"{path}: added transient E-Ink region hints")
         return 0
     if (
         PREVIOUS_DRAIN_NOTIFIER_STATE in text

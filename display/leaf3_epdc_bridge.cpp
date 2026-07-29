@@ -149,7 +149,7 @@ constexpr int64_t kNotifierSafetyProbeDelayUs = 30000000;
 constexpr int64_t kNotifierCaptureRetryDelayUs = 100000;
 constexpr int64_t kNotifierRaceGraceDelayUs = 500000;
 constexpr uint32_t kLeaf3FrameNotifierTransaction = 1037;
-constexpr int32_t kLeaf3FrameNotifierVersion = 2;
+constexpr int32_t kLeaf3FrameNotifierVersion = 3;
 constexpr int32_t kLeaf3FrameNotifierUnregister = 0;
 constexpr int32_t kLeaf3FrameNotifierRegister = 1;
 constexpr int32_t kLeaf3FrameNotifierTakeDamage = 2;
@@ -169,6 +169,10 @@ constexpr uint64_t kPageTurnMinimumAreaDenominator = 3;
 constexpr char kRefreshModeProperty[] = "persist.sys.leaf3.refresh_mode";
 constexpr char kActiveRefreshModeProperty[] = "sys.leaf3.active_refresh_mode";
 constexpr char kActivePackageProperty[] = "sys.leaf3.active_package";
+constexpr char kActivePageIntervalProperty[] = "sys.leaf3.active_page_interval";
+constexpr char kActiveContrastProperty[] = "sys.leaf3.active_contrast";
+constexpr char kActiveGammaProperty[] = "sys.leaf3.active_gamma";
+constexpr char kActiveDitherProperty[] = "sys.leaf3.active_dither";
 constexpr char kFullRefreshProperty[] = "sys.leaf3.full_refresh";
 constexpr char kClearOnSleepProperty[] = "persist.sys.leaf3.clear_on_sleep";
 constexpr char kSleepScreenProperty[] = "persist.sys.leaf3.sleep_screen";
@@ -470,10 +474,14 @@ public:
     const char *cleanup = read(cleanup_, &changed);
     const char *content_aware = read(content_aware_, &changed);
     const char *scroll_detect = read(scroll_detect_, &changed);
+    const char *active_page_interval = read(active_page_interval_, &changed);
     const char *page_interval = read(page_interval_, &changed);
     const char *settled_quality = read(settled_quality_, &changed);
+    const char *active_contrast = read(active_contrast_, &changed);
     const char *contrast = read(contrast_, &changed);
+    const char *active_gamma = read(active_gamma_, &changed);
     const char *gamma = read(gamma_, &changed);
+    const char *active_dither = read(active_dither_, &changed);
     const char *dither = read(dither_, &changed);
     const char *clear_on_sleep = read(clear_on_sleep_, &changed);
     const char *sleep_screen = read(sleep_screen_, &changed);
@@ -532,7 +540,11 @@ public:
     (void)content_aware;
     settings_.content_aware = false;
     settings_.scroll_detect = parseInteger(scroll_detect, 1) != 0;
-    const int requested_page_interval = parseInteger(page_interval, 10);
+    const char *effective_page_interval =
+        propertyValue(active_page_interval)[0] == '\0' ? page_interval
+                                                       : active_page_interval;
+    const int requested_page_interval =
+        parseInteger(effective_page_interval, 10);
     const int supported_page_intervals[] = {0, 1, 3, 5, 10, 30, 50};
     settings_.page_interval = 10;
     for (const int supported : supported_page_intervals) {
@@ -542,9 +554,20 @@ public:
       }
     }
     settings_.settled_quality = parseInteger(settled_quality, 1) != 0;
-    settings_.contrast = std::clamp(parseInteger(contrast, 0), -50, 50);
-    settings_.gamma = std::clamp(parseInteger(gamma, 100), 50, 200);
-    settings_.dither = parseInteger(dither, 1) != 0;
+    settings_.contrast =
+        std::clamp(parseInteger(propertyValue(active_contrast)[0] == '\0'
+                                    ? contrast
+                                    : active_contrast,
+                                0),
+                   -50, 50);
+    settings_.gamma = std::clamp(
+        parseInteger(
+            propertyValue(active_gamma)[0] == '\0' ? gamma : active_gamma, 100),
+        50, 200);
+    settings_.dither =
+        parseInteger(propertyValue(active_dither)[0] == '\0' ? dither
+                                                             : active_dither,
+                     1) != 0;
     const std::string sleep_screen_value = propertyValue(sleep_screen);
     if (sleep_screen_value == "retain") {
       settings_.sleep_screen = SleepScreen::kRetain;
@@ -596,10 +619,14 @@ private:
   CachedStringProperty cleanup_{kCleanupPolicyProperty};
   CachedStringProperty content_aware_{kContentAwareProperty};
   CachedStringProperty scroll_detect_{kScrollDetectProperty};
+  CachedStringProperty active_page_interval_{kActivePageIntervalProperty};
   CachedStringProperty page_interval_{kPageIntervalProperty};
   CachedStringProperty settled_quality_{kSettledQualityProperty};
+  CachedStringProperty active_contrast_{kActiveContrastProperty};
   CachedStringProperty contrast_{kContrastProperty};
+  CachedStringProperty active_gamma_{kActiveGammaProperty};
   CachedStringProperty gamma_{kGammaProperty};
+  CachedStringProperty active_dither_{kActiveDitherProperty};
   CachedStringProperty dither_{kDitherProperty};
   CachedStringProperty clear_on_sleep_{kClearOnSleepProperty};
   CachedStringProperty sleep_screen_{kSleepScreenProperty};
@@ -976,7 +1003,13 @@ struct Frame {
   uint32_t stride = 0;
   int32_t format = 0;
   std::optional<ChangedRect> damage_hint;
+  std::optional<ChangedRect> transient_hint;
   int64_t trigger_us = 0;
+};
+
+struct NotifierDamage {
+  std::optional<ChangedRect> damage;
+  std::optional<ChangedRect> transient_hint;
 };
 
 class FrameSource {
@@ -1524,9 +1557,9 @@ public:
     input_probe_deadline_us_ = 0;
     capture_retry_deadline_us_ = 0;
 
-    const std::optional<ChangedRect> damage =
-        notification ? takeDamage() : std::nullopt;
-    if (!screenshot_.acquire(frame, damage)) {
+    const NotifierDamage notification_damage =
+        notification ? takeDamage() : NotifierDamage{};
+    if (!screenshot_.acquire(frame, notification_damage.damage)) {
       // Consuming the wake before capture is safe only after a frame has been
       // acquired. Preserve every trigger and retry soon without spinning.
       if (notification) {
@@ -1548,6 +1581,7 @@ public:
       return false;
     }
 
+    frame->transient_hint = notification_damage.transient_hint;
     if (current_capture_is_probe_) {
       probe_generation_ = probe_generation;
     }
@@ -1669,9 +1703,10 @@ private:
     return static_cast<status_t>(reply.readInt32());
   }
 
-  std::optional<ChangedRect> takeDamage() {
+  NotifierDamage takeDamage() {
+    NotifierDamage result;
     if (surface_flinger_ == nullptr) {
-      return std::nullopt;
+      return result;
     }
 
     android::Parcel data;
@@ -1681,25 +1716,42 @@ private:
     data.writeInt32(kLeaf3FrameNotifierTakeDamage);
     const status_t status = surface_flinger_->transact(
         kLeaf3FrameNotifierTransaction, data, &reply);
-    if (status != NO_ERROR || reply.readInt32() == 0) {
-      return std::nullopt;
+    if (status != NO_ERROR) {
+      return result;
     }
 
-    const int32_t left = reply.readInt32();
-    const int32_t top = reply.readInt32();
-    const int32_t right = reply.readInt32();
-    const int32_t bottom = reply.readInt32();
-    if (left < 0 || top < 0 || right <= left || bottom <= top) {
-      ALOGW("SurfaceFlinger returned invalid damage [%d,%d,%d,%d]", left, top,
-            right, bottom);
-      return std::nullopt;
+    if (reply.readInt32() != 0) {
+      const int32_t left = reply.readInt32();
+      const int32_t top = reply.readInt32();
+      const int32_t right = reply.readInt32();
+      const int32_t bottom = reply.readInt32();
+      if (left < 0 || top < 0 || right <= left || bottom <= top) {
+        ALOGW("SurfaceFlinger returned invalid damage [%d,%d,%d,%d]", left, top,
+              right, bottom);
+      } else {
+        result.damage = ChangedRect{
+            static_cast<uint32_t>(left),
+            static_cast<uint32_t>(top),
+            static_cast<uint32_t>(right),
+            static_cast<uint32_t>(bottom),
+        };
+      }
     }
-    return ChangedRect{
-        static_cast<uint32_t>(left),
-        static_cast<uint32_t>(top),
-        static_cast<uint32_t>(right),
-        static_cast<uint32_t>(bottom),
-    };
+    if (reply.readInt32() != 0) {
+      const int32_t left = reply.readInt32();
+      const int32_t top = reply.readInt32();
+      const int32_t right = reply.readInt32();
+      const int32_t bottom = reply.readInt32();
+      if (left >= 0 && top >= 0 && right > left && bottom > top) {
+        result.transient_hint = ChangedRect{
+            static_cast<uint32_t>(left),
+            static_cast<uint32_t>(top),
+            static_cast<uint32_t>(right),
+            static_cast<uint32_t>(bottom),
+        };
+      }
+    }
+    return result;
   }
 
   void notificationThread() {
@@ -2041,6 +2093,11 @@ ChangedRect unionRects(const ChangedRect &left, const ChangedRect &right) {
   };
 }
 
+bool overlaps(const ChangedRect &left, const ChangedRect &right) {
+  return left.left < right.right && right.left < left.right &&
+         left.top < right.bottom && right.top < left.bottom;
+}
+
 // Tracks damage on a tile grid so unrelated changes in distant parts of the
 // screen do not union into one screen-sized rectangle.
 class DamageMap {
@@ -2138,6 +2195,28 @@ public:
       }
     }
     return area;
+  }
+
+  bool intersectsDirty(const ChangedRect &region) const {
+    const uint32_t right = std::min(width_, region.right);
+    const uint32_t bottom = std::min(height_, region.bottom);
+    if (region.left >= right || region.top >= bottom) {
+      return false;
+    }
+    const uint32_t first_column = region.left / kTileSize;
+    const uint32_t last_column =
+        std::min(columns_, (right + kTileSize - 1) / kTileSize);
+    const uint32_t first_row = region.top / kTileSize;
+    const uint32_t last_row =
+        std::min(rows_, (bottom + kTileSize - 1) / kTileSize);
+    for (uint32_t row = first_row; row < last_row; ++row) {
+      for (uint32_t column = first_column; column < last_column; ++column) {
+        if (tiles_[static_cast<size_t>(row) * columns_ + column] != 0) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   // Visit horizontally contiguous dirty tiles without coalescing unrelated
@@ -3299,9 +3378,13 @@ int main() {
           scroll_in_progress && last_scroll_activity_us != 0 &&
           now_us - last_scroll_activity_us < kScrollFlingWindowUs;
 
-      bool scrolling = false;
+      const bool hinted_scrolling =
+          changed && !full_refresh && !tone_reprocess &&
+          frame.transient_hint.has_value() &&
+          damage.intersectsDirty(*frame.transient_hint);
+      bool scrolling = hinted_scrolling;
       if (changed && !full_refresh && !tone_reprocess &&
-          settings.scroll_detect) {
+          settings.scroll_detect && !hinted_scrolling) {
         const ChangedRect box = damage.bounds();
         // App content rarely occupies the status and navigation bars. Requiring
         // half of the physical panel excluded otherwise valid Settings and
@@ -3333,13 +3416,16 @@ int main() {
           }
         }
       }
+      if (hinted_scrolling) {
+        ++stats.scroll_frames;
+      }
       if (changed) {
         // Narrow damage such as a scrollbar or caret is intentionally not
         // promoted to A2, but it must not erase a live drag or the extended
         // row-hash window of an established fling.
         scroll_in_progress =
-            settings.scroll_detect &&
-            (scrolling || gesture_scrolling || established_fling_live);
+            scrolling || (settings.scroll_detect &&
+                          (gesture_scrolling || established_fling_live));
       }
 
       if (changed) {

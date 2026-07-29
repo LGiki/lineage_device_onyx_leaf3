@@ -28,6 +28,10 @@ following safe optimizations are already present:
 - An optional settled Regal pass: large page changes appear first through AUTO
   and receive REGAL only after 180 ms of compositor quiet.
 - Bridge-side grayscale tone controls for contrast, gamma, and EBC dithering.
+- Versioned per-app profiles for waveform, contrast, gamma, dithering, Reader
+  cleanup interval, and selective property-animation filtering.
+- Framework touch-slop hints that mark only the moving view region as
+  transient ANIM damage in the composer-native backend.
 - Latency telemetry for the pacing gate, notification-to-capture,
   notification-to-submit, and the EBC ioctl itself.
 - Blocking display-off waits and property-value caching.
@@ -55,7 +59,7 @@ quarantined because both caused crashes under composition or scrolling load.
 | 5A | Implemented, hardware validation required | Coalesce to the newest frame before EBC submission | Low to medium |
 | 5B | Implemented, hardware validation required | Port stock reader refresh policy and tone controls | Low to medium |
 | 6 | Implemented, hardware validation required | Port the stock composer-native EPDC protocol | High |
-| 7 | Research | Expose stock-style per-surface E-Ink controls | High |
+| 7 | Implemented subset, hardware validation required | Add transient moving-view waveform hints and selective animation filtering | High |
 
 ### Phase 1: SurfaceFlinger frame notification
 
@@ -234,11 +238,12 @@ reboot so both writers can never run concurrently.
 
 Native policy currently supports Balanced/Normal AUTO, Speed DU, A2 ANIM,
 Regal with an optional settled pass, Reader DU with interval GC16, dithering,
-and bounded per-tile regional cleanup. Screenshot-only behavior—automatic
-touch/row-hash scrolling, contrast/gamma staging, idle capture policy, and a
-white clear-on-sleep frame—is deliberately unavailable and is marked disabled
-in Leaf3 Controls. Native Reader therefore uses DU during continuous scrolling
-until Phase 7 provides per-surface motion hints.
+bounded per-tile regional cleanup, and short-lived framework hints for the
+moving view region. Damage inside a hint uses ANIM while surrounding text,
+navigation, and dialog damage keeps the selected AUTO, DU, or REGAL policy.
+Screenshot-only behavior—raw-input/row-hash fallback scrolling,
+contrast/gamma staging, idle capture policy, and a white clear-on-sleep
+frame—is deliberately unavailable and is marked disabled in Leaf3 Controls.
 
 Hardware validation must confirm:
 
@@ -255,14 +260,24 @@ Hardware validation must confirm:
 
 ### Phase 7: Stock-style application and view controls
 
-After the composer-native protocol is stable, expose framework APIs equivalent
-to the stock ROM's per-surface E-Ink metadata. Candidate controls include
-region waveform selection, transient scrolling mode, dithering and text
-enhancement, new-surface lifecycle hints, and cleanup intervals.
+The first framework subset is implemented. `View` and `ViewGroup` dispatch
+touch-slop-qualified regions that are coalesced to one bounded, one-way
+SurfaceFlinger transaction per frame. Changes to the selected view's scroll
+offset or child geometry renew a released fling until movement goes quiet or
+reaches its five-second safety bound. The native controller intersects that
+region with the current physical-display damage rectangles so only actual
+damage inside the moving view receives ANIM. These are transient screen-space
+view hints, not persistent SurfaceControl metadata. SurfaceFlinger accepts and
+retains them only while their owner remains the foreground UID published by
+the system app.
+Per-app profiles can also finish property animations immediately without
+changing SystemUI or other processes.
 
-Add an application optimization database only after those controls work
-reliably. Unknown applications must remain on conservative defaults, and
-application hints must not bypass driver pacing or safety limits.
+The remaining stock-style candidates are durable per-surface metadata, text
+enhancement, and new-surface lifecycle hints. Add an automatic application
+optimization database only after the implemented subset passes hardware
+validation. Unknown applications remain on conservative defaults, and view
+hints do not bypass driver pacing or safety limits.
 
 ## Hardware gate for every phase
 

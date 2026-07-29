@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <deque>
 #include <mutex>
 #include <sstream>
@@ -26,6 +27,9 @@ constexpr char kStateProperty[] = "sys.leaf3.stat.epdc_native_state";
 constexpr char kActiveModeProperty[] = "sys.leaf3.active_refresh_mode";
 constexpr char kGlobalModeProperty[] = "persist.sys.leaf3.refresh_mode";
 constexpr char kActivePackageProperty[] = "sys.leaf3.active_package";
+constexpr char kActiveUidProperty[] = "sys.leaf3.active_uid";
+constexpr char kActivePageIntervalProperty[] = "sys.leaf3.active_page_interval";
+constexpr char kActiveDitherProperty[] = "sys.leaf3.active_dither";
 constexpr char kCleanupProperty[] = "persist.sys.leaf3.cleanup_policy";
 constexpr char kPageIntervalProperty[] = "persist.sys.leaf3.page_interval";
 constexpr char kSettledQualityProperty[] = "persist.sys.leaf3.settle_quality";
@@ -40,7 +44,7 @@ constexpr uint32_t kWaveformRegal = 6;
 constexpr uint32_t kModeFull = 0x20;
 constexpr uint32_t kModeDither = 0x100;
 
-constexpr size_t kMaximumBatch = 8;
+constexpr size_t kMaximumBatch = kLeaf3MaximumUpdates;
 constexpr int32_t kAlignment = 8;
 constexpr int32_t kGhostTile = 32;
 constexpr nsecs_t kSettledDelay = 180000000;
@@ -63,6 +67,14 @@ Rect unionRects(const Rect &first, const Rect &second) {
   result.right = std::max(result.right, second.right);
   result.bottom = std::max(result.bottom, second.bottom);
   return result;
+}
+
+Rect intersectRects(const Rect &first, const Rect &second) {
+  const Rect result(std::max(first.left, second.left),
+                    std::max(first.top, second.top),
+                    std::min(first.right, second.right),
+                    std::min(first.bottom, second.bottom));
+  return result.isValid() && !result.isEmpty() ? result : Rect();
 }
 
 Rect alignedRect(const Rect &damage, const Rect &bounds) {
@@ -90,8 +102,11 @@ uint64_t damageArea(const Region &damage) {
 }
 
 int supportedPageInterval() {
+  const std::string active =
+      android::base::GetProperty(kActivePageIntervalProperty, "");
   const int requested =
-      android::base::GetIntProperty(kPageIntervalProperty, 10);
+      active.empty() ? android::base::GetIntProperty(kPageIntervalProperty, 10)
+                     : std::atoi(active.c_str());
   constexpr int supported[] = {0, 1, 3, 5, 10, 30, 50};
   for (const int interval : supported) {
     if (requested == interval) {
@@ -102,8 +117,12 @@ int supportedPageInterval() {
 }
 
 uint32_t ditherFlag() {
-  return android::base::GetBoolProperty(kDitherProperty, true) ? kModeDither
-                                                               : 0;
+  const std::string active =
+      android::base::GetProperty(kActiveDitherProperty, "");
+  const bool enabled =
+      active.empty() ? android::base::GetBoolProperty(kDitherProperty, true)
+                     : active != "0";
+  return enabled ? kModeDither : 0;
 }
 
 std::string effectiveMode() {
@@ -176,6 +195,9 @@ public:
     settledDeadline = 0;
     settledRegion = Rect();
     pageCount = 0;
+    transientRegion = Rect();
+    transientDeadline = 0;
+    transientUid = -1;
   }
 
   void markFastLocked(const Rect &rect) {
@@ -304,6 +326,9 @@ public:
     cleanupSchedule.clear();
     settledDeadline = 0;
     settledRegion = Rect();
+    transientDeadline = 0;
+    transientRegion = Rect();
+    transientUid = -1;
     std::fill(ghostAge.begin(), ghostAge.end(), 0);
     pageCount = 0;
     armedDeadline = 0;
@@ -409,6 +434,7 @@ public:
         const uint64_t cleanupSnapshot = cleanupUpdates;
         const uint64_t pageSnapshot = pageCleanups;
         const uint64_t settledSnapshot = settledUpdates;
+        const uint64_t transientSnapshot = transientUpdates;
         const uint64_t errorSnapshot = errors;
         statsDirty = false;
         nextStatsPublish = now + kStatsInterval;
@@ -423,6 +449,8 @@ public:
                                    std::to_string(pageSnapshot));
         android::base::SetProperty("sys.leaf3.stat.epdc_native_settled",
                                    std::to_string(settledSnapshot));
+        android::base::SetProperty("sys.leaf3.stat.epdc_native_transient",
+                                   std::to_string(transientSnapshot));
         android::base::SetProperty("sys.leaf3.stat.epdc_native_errors",
                                    std::to_string(errorSnapshot));
         lock.lock();
@@ -506,7 +534,10 @@ public:
   int pageCount = 0;
   Rect settledRegion;
   Rect notifierDamage;
+  Rect transientRegion;
   nsecs_t settledDeadline = 0;
+  nsecs_t transientDeadline = 0;
+  int32_t transientUid = -1;
   Leaf3CleanupSchedule cleanupSchedule;
   nsecs_t armedDeadline = 0;
   nsecs_t nextStatsPublish = 0;
@@ -516,6 +547,7 @@ public:
   uint64_t cleanupUpdates = 0;
   uint64_t pageCleanups = 0;
   uint64_t settledUpdates = 0;
+  uint64_t transientUpdates = 0;
   uint64_t fullRefreshes = 0;
   uint64_t errors = 0;
 };
@@ -584,6 +616,16 @@ Leaf3EpdcController::preparePresent(const Region &damage, const Rect &bounds) {
     return {};
   }
   const nsecs_t now = systemTime();
+  const std::string package =
+      android::base::GetProperty(kActivePackageProperty, "");
+  if (package != mImpl->foregroundToken) {
+    mImpl->foregroundToken = package;
+    mImpl->pageCount = 0;
+    mImpl->transientRegion = Rect();
+    mImpl->transientDeadline = 0;
+    mImpl->transientUid = -1;
+  }
+
   const std::string cleanup =
       android::base::GetProperty(kCleanupProperty, "balanced");
   const std::string mode = effectiveMode();
@@ -629,12 +671,32 @@ Leaf3EpdcController::preparePresent(const Region &damage, const Rect &bounds) {
     return {};
   }
 
-  const std::string package =
-      android::base::GetProperty(kActivePackageProperty, "");
-  if (package != mImpl->foregroundToken) {
-    mImpl->foregroundToken = package;
-    mImpl->pageCount = 0;
+  const int32_t activeUid =
+      android::base::GetIntProperty(kActiveUidProperty, -1);
+  if (mImpl->transientDeadline != 0 &&
+      (now >= mImpl->transientDeadline ||
+       !leaf3TransientHintAuthorized(mImpl->transientUid, activeUid))) {
+    mImpl->transientRegion = Rect();
+    mImpl->transientDeadline = 0;
+    mImpl->transientUid = -1;
   }
+  const Rect transient =
+      alignedRect(intersectRects(mImpl->transientRegion, bounds), bounds);
+  std::vector<Leaf3PolicyRect> alignedDamage;
+  alignedDamage.reserve(kMaximumBatch);
+  for (const Rect &damageRect : damage) {
+    const Rect aligned = alignedRect(damageRect, bounds);
+    if (!aligned.isEmpty()) {
+      alignedDamage.push_back(Leaf3PolicyRect{aligned.left, aligned.top,
+                                              aligned.right, aligned.bottom});
+    }
+  }
+  const Leaf3TransientDamageSplit transientSplit = splitLeaf3TransientDamage(
+      alignedDamage.data(), alignedDamage.size(),
+      Leaf3PolicyRect{transient.left, transient.top, transient.right,
+                      transient.bottom});
+  const bool transientScrolling =
+      !transientSplit.overflow && transientSplit.transientCount != 0;
 
   const uint64_t panelArea = rectArea(bounds);
   const bool large = panelArea != 0 && damageArea(damage) >= panelArea / 3;
@@ -649,7 +711,7 @@ Leaf3EpdcController::preparePresent(const Region &damage, const Rect &bounds) {
     waveform = kWaveformAnim;
     fast = true;
   } else if (mode == "regal") {
-    if (large && settledQuality) {
+    if (large && settledQuality && !transientScrolling) {
       waveform = kWaveformAuto;
       mImpl->settledRegion = mImpl->settledRegion.isEmpty()
                                  ? rect
@@ -661,7 +723,7 @@ Leaf3EpdcController::preparePresent(const Region &damage, const Rect &bounds) {
   } else if (mode == "reader") {
     waveform = kWaveformDu;
     fast = true;
-    readerPage = large;
+    readerPage = large && !transientScrolling;
     if (readerPage && cleanup != "manual") {
       const int interval = supportedPageInterval();
       ++mImpl->pageCount;
@@ -682,9 +744,35 @@ Leaf3EpdcController::preparePresent(const Region &damage, const Rect &bounds) {
     mImpl->markFastLocked(rect);
     mImpl->cleanupSchedule.noteActivity(now);
   }
+  if (transientScrolling && waveform != kWaveformAnim && cleanup != "manual") {
+    for (size_t index = 0; index < transientSplit.transientCount; ++index) {
+      const Leaf3PolicyRect &moving = transientSplit.transient[index];
+      mImpl->markFastLocked(
+          Rect(moving.left, moving.top, moving.right, moving.bottom));
+    }
+    mImpl->cleanupSchedule.noteActivity(now);
+  }
   mImpl->armTimerLocked();
 
   const uint32_t updateMode = waveform | ditherFlag();
+  if (transientScrolling && waveform != kWaveformAnim) {
+    std::vector<Leaf3EpdcUpdate> updates;
+    updates.reserve(transientSplit.normalCount + transientSplit.transientCount);
+    for (size_t index = 0; index < transientSplit.normalCount; ++index) {
+      const Leaf3PolicyRect &normal = transientSplit.normal[index];
+      updates.push_back(mImpl->makeUpdateLocked(
+          Rect(normal.left, normal.top, normal.right, normal.bottom),
+          updateMode));
+    }
+    for (size_t index = 0; index < transientSplit.transientCount; ++index) {
+      const Leaf3PolicyRect &moving = transientSplit.transient[index];
+      updates.push_back(mImpl->makeUpdateLocked(
+          Rect(moving.left, moving.top, moving.right, moving.bottom),
+          kWaveformAnim | ditherFlag()));
+    }
+    ++mImpl->transientUpdates;
+    return updates;
+  }
   size_t rectCount = 0;
   damage.getArray(&rectCount);
   if (rectCount == 0 || rectCount > kMaximumBatch) {
@@ -704,17 +792,50 @@ Leaf3EpdcController::preparePresent(const Region &damage, const Rect &bounds) {
                          : updates;
 }
 
-bool Leaf3EpdcController::takeNotifierDamage(Rect *damage) {
-  if (damage == nullptr) {
+bool Leaf3EpdcController::takeNotifierDamage(Rect *damage,
+                                             Rect *transientHint) {
+  if (damage == nullptr || transientHint == nullptr) {
     return false;
   }
   std::lock_guard<std::mutex> lock(mImpl->mutex);
+  const int32_t activeUid =
+      android::base::GetIntProperty(kActiveUidProperty, -1);
+  if (mImpl->transientDeadline != 0 &&
+      systemTime() < mImpl->transientDeadline &&
+      leaf3TransientHintAuthorized(mImpl->transientUid, activeUid)) {
+    *transientHint = mImpl->transientRegion;
+  } else {
+    *transientHint = Rect();
+    mImpl->transientRegion = Rect();
+    mImpl->transientDeadline = 0;
+    mImpl->transientUid = -1;
+  }
   if (mImpl->notifierDamage.isEmpty()) {
     return false;
   }
   *damage = mImpl->notifierDamage;
   mImpl->notifierDamage = Rect();
   return true;
+}
+
+void Leaf3EpdcController::setTransientHint(const Rect &region, nsecs_t duration,
+                                           int32_t ownerUid) {
+  std::lock_guard<std::mutex> lock(mImpl->mutex);
+  if (!region.isValid() || region.isEmpty() || ownerUid < 0) {
+    return;
+  }
+  const nsecs_t now = systemTime();
+  mImpl->transientRegion = region;
+  mImpl->transientDeadline =
+      now + std::clamp<nsecs_t>(duration, 100000000, 2000000000);
+  mImpl->transientUid = ownerUid;
+}
+
+void Leaf3EpdcController::clearTransientHint() {
+  std::lock_guard<std::mutex> lock(mImpl->mutex);
+  mImpl->transientRegion = Rect();
+  mImpl->transientDeadline = 0;
+  mImpl->transientUid = -1;
 }
 
 void Leaf3EpdcController::requestFullRefresh() {
@@ -790,6 +911,7 @@ std::string Leaf3EpdcController::dump() const {
          << " pixels=" << mImpl->pixels << " cleanup=" << mImpl->cleanupUpdates
          << " page_cleanup=" << mImpl->pageCleanups
          << " settled=" << mImpl->settledUpdates
+         << " transient=" << mImpl->transientUpdates
          << " full=" << mImpl->fullRefreshes << " errors=" << mImpl->errors
          << "\n";
   return output.str();

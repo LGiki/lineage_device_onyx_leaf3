@@ -570,9 +570,10 @@ adb shell dumpsys SurfaceFlinger | grep 'Leaf3 composer EPDC'
 
 It eliminates screenshot capture, comparison, buffer copies, and direct EBC
 ioctls. Balanced/Normal, Speed, A2, Regal, Reader interval cleanup, dithering,
-settled Regal, and regional cleanup are implemented natively. Automatic
-scroll detection, contrast/gamma staging, idle capture policy, and sleep-screen
-rendering are bridge-only; Leaf3 Controls disables them while composer mode is
+settled Regal, regional cleanup, and transient moving-view ANIM hints are
+implemented natively. Raw-input/row-hash fallback detection,
+contrast/gamma staging, idle capture policy, and sleep-screen rendering are
+bridge-only; Leaf3 Controls disables those controls while composer mode is
 active.
 
 Return to the bridge immediately if the panel misbehaves:
@@ -628,11 +629,12 @@ ghosting with:
 adb shell leaf3-refresh full
 ```
 
-The global mode is the fallback for apps without a saved profile. Leaf3
-Controls observes foreground task changes and publishes a non-persistent
-effective mode for configured apps. Precedence is a temporary Quick Settings
-override, then the saved app profile, then the global mode. Neither profiles
-nor temporary overrides overwrite the global persistent property.
+Global settings are the fallback for fields not set in a saved app profile.
+Leaf3 Controls observes foreground task changes and publishes non-persistent
+effective waveform, contrast, gamma, dithering, Reader cleanup interval, and
+animation-filter values. Waveform precedence is a temporary Quick Settings
+override, then the saved app profile, then the global mode. Profiles and
+temporary overrides never overwrite the global persistent properties.
 
 Bridge counters are published every 60 seconds and logged as one structured
 `leaf3_epdc_bridge` line. Inspect them through Leaf3 Controls or:
@@ -752,7 +754,9 @@ The launcher contains a platform-signed system app named **Leaf3 Controls**.
 It provides:
 
 - Balanced, Normal, Speed, A2, Regal, and Reader refresh modes.
-- Per-app refresh profiles with a global fallback.
+- Per-app profiles for waveform, contrast, gamma, dithering, Reader cleanup
+  interval, and selective property-animation filtering, with field-by-field
+  global fallback.
 - Responsive, Balanced, and Battery idle-capture policies.
 - Quality, Balanced, and Manual ghost-cleanup policies.
 - A one-tap full GC16 screen cleanup.
@@ -761,6 +765,13 @@ It provides:
 - Native bridge counters and timing diagnostics.
 - An opt-in global grayscale switch using SurfaceFlinger's color matrix.
 - Default-on touch-slop scroll detection with a row-hash fallback.
+- Per-view transient scrolling hints; composer-native mode applies ANIM only
+  to actual damage inside the moving view while surrounding content keeps its
+  normal waveform. Nested callbacks are coalesced once per frame, and observed
+  scroll-offset or child-geometry movement renews released flings within a
+  bounded window. These short-lived screen-space hints are not durable
+  SurfaceControl metadata, and SurfaceFlinger accepts and retains them only
+  for the current foreground UID.
 - Per-tile aged, bounded regional post-scroll quality cleanup.
 - Reader page-count cleanup with stock intervals from every page through every
   50 pages, plus an automatic-cleanup-off option.
