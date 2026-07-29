@@ -350,6 +350,13 @@ readonly LIGHT_BAR_CONTROLLER_SOURCE="$SOURCE_DIR/frameworks/base/packages/Syste
 python3 "$TARGET_DEVICE_DIR/tools/patch-systemui-dark-navigation-icons.py" \
   "$LIGHT_BAR_CONTROLLER_SOURCE"
 
+log "Adding the optional Leaf3 E-Ink refresh navigation button"
+readonly NAVIGATION_BAR_INFLATER_SOURCE="$SOURCE_DIR/frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/phone/NavigationBarInflaterView.java"
+[[ -f "$NAVIGATION_BAR_INFLATER_SOURCE" ]] || \
+  die "missing SystemUI NavigationBarInflaterView source: $NAVIGATION_BAR_INFLATER_SOURCE"
+python3 "$TARGET_DEVICE_DIR/tools/patch-systemui-leaf3-refresh-button.py" \
+  "$NAVIGATION_BAR_INFLATER_SOURCE"
+
 log "Adding the Leaf3 SurfaceFlinger notifier and composer EPDC transport"
 readonly FRAMEWORKS_NATIVE_SOURCE="$SOURCE_DIR/frameworks/native"
 readonly SURFACEFLINGER_SOURCE="$SOURCE_DIR/frameworks/native/services/surfaceflinger/SurfaceFlinger.cpp"
@@ -457,6 +464,8 @@ python3 "$TARGET_DEVICE_DIR/tools/patch-systemui-assist-handler.py" --check \
   "$ASSIST_MANAGER_SOURCE"
 python3 "$TARGET_DEVICE_DIR/tools/patch-systemui-dark-navigation-icons.py" --check \
   "$LIGHT_BAR_CONTROLLER_SOURCE"
+python3 "$TARGET_DEVICE_DIR/tools/patch-systemui-leaf3-refresh-button.py" --check \
+  "$NAVIGATION_BAR_INFLATER_SOURCE"
 python3 "$COMPOSER_EPDC_PATCHER" --check \
   "$FRAMEWORKS_NATIVE_SOURCE"
 python3 "$FRAME_NOTIFIER_PATCHER" --check \
@@ -478,6 +487,9 @@ grep -Fxq 'persist.sys.leaf3.capture_mode=notify' \
 grep -Fxq 'persist.sys.leaf3.epdc_backend=bridge' \
   "$PRODUCT_OUT/system/etc/prop.default" || \
   die "build did not keep the direct-EBC bridge as the safe EPDC default"
+grep -Fxq 'persist.sys.leaf3.nav_refresh_button=0' \
+  "$PRODUCT_OUT/system/etc/prop.default" || \
+  die "build did not default the Leaf3 navigation refresh button to disabled"
 [[ -s "$PRODUCT_OUT/system_ext/etc/selinux/system_ext_sepolicy.cil" ]] || \
   die "system_ext is missing its SELinux policy"
 grep -Fq 'leaf3_epdc_bridge' \

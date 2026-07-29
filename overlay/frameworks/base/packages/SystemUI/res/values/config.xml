@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The optional Leaf3 refresh key occupies the outer end of the bar. -->
+    <string name="config_navBarLayoutLeaf3Refresh" translatable="false">left[.5W],back[1WC];home;recent[1WC],leaf3_refresh[1WC],right[.5W]</string>
+</resources>

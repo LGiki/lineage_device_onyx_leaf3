@@ -60,3 +60,4 @@ PRODUCT_SYSTEM_DEFAULT_PROPERTIES += \
     persist.sys.leaf3.contrast=0 \
     persist.sys.leaf3.gamma=100 \
     persist.sys.leaf3.dither=1
+    persist.sys.leaf3.nav_refresh_button=0

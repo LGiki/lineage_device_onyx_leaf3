@@ -149,6 +149,12 @@
                     android:layout_marginStart="4dp"
                     android:text="@string/mode_specifications_short" />
             </LinearLayout>
+
+            <Switch
+                android:id="@+id/navigation_refresh_button"
+                style="@style/Leaf3Switch"
+                android:layout_marginTop="4dp"
+                android:text="@string/navigation_refresh_button" />
         </LinearLayout>
 
         <ScrollView

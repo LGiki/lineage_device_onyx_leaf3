@@ -22,6 +22,7 @@
     <string name="regal_explanation"><b>Regal — Cleanest page</b>\nReduces ghosting on static reading pages; responds more slowly.</string>
     <string name="reader_explanation"><b>Reader — Fast page turns</b>\nUses DU for pages and performs GC16 only at the selected page interval.</string>
     <string name="full_refresh">Clean screen now</string>
+    <string name="navigation_refresh_button">Navigation-bar refresh button</string>
     <string name="per_app_profiles">Per-app refresh profiles</string>
     <string name="per_app_profiles_short">App profiles</string>
     <string name="mode_specifications">Refresh mode specifications</string>

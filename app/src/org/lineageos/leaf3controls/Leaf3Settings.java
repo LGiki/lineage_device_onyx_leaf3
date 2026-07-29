@@ -21,6 +21,8 @@ final class Leaf3Settings {
       "sys.leaf3.active_refresh_source";
   static final String ACTIVE_PACKAGE = "sys.leaf3.active_package";
   static final String FULL_REFRESH = "sys.leaf3.full_refresh";
+  static final String NAV_REFRESH_BUTTON =
+      "persist.sys.leaf3.nav_refresh_button";
   static final String IDLE_POLICY = "persist.sys.leaf3.idle_policy";
   static final String CLEANUP_POLICY = "persist.sys.leaf3.cleanup_policy";
   static final String SCROLL_DETECT = "persist.sys.leaf3.scroll_detect";

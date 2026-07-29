@@ -756,6 +756,7 @@ It provides:
 - Responsive, Balanced, and Battery idle-capture policies.
 - Quality, Balanced, and Manual ghost-cleanup policies.
 - A one-tap full GC16 screen cleanup.
+- An optional navigation-bar refresh button, disabled by default.
 - Refresh-mode and clean-screen Quick Settings tiles.
 - Native bridge counters and timing diagnostics.
 - An opt-in global grayscale switch using SurfaceFlinger's color matrix.
@@ -789,6 +790,11 @@ foreground app; the override clears when the foreground package changes or
 the state service restarts. **Clean screen** requests one full GC16 update.
 Long-pressing either tile opens Leaf3 Controls. The ROM does not modify an
 existing user's tile layout automatically.
+
+Enable **Navigation-bar refresh button** in the Refresh page to add a fourth,
+dark refresh icon after Recents. Tapping it requests the same full-panel GC16
+cleanup as **Clean screen now** and the Clean screen tile; turn the setting off
+to restore the standard three-button bar immediately.
 
 The app is installed in `system_ext.img`. After rebuilding, flash the new
 `system.img`, `system_ext.img`, and matching `vbmeta.img`. Confirm installation

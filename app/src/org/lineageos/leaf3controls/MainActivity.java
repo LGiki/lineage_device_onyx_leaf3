@@ -96,6 +96,8 @@ public final class MainActivity extends Activity {
     sleepScreenModes = findViewById(R.id.sleep_screen_modes);
     chooseSleepImage = findViewById(R.id.choose_sleep_image);
     final Switch grayscale = findViewById(R.id.grayscale);
+    final Switch navigationRefreshButton =
+        findViewById(R.id.navigation_refresh_button);
     scrollDetection = findViewById(R.id.scroll_detection);
     final Switch settledQuality = findViewById(R.id.settled_quality);
     final Switch dither = findViewById(R.id.dither);
@@ -133,6 +135,8 @@ public final class MainActivity extends Activity {
     disableAnimations.setChecked(animationsDisabled());
     selectSleepScreen(sleepScreenModes, sleepScreenMode());
     grayscale.setChecked(Leaf3Settings.isGrayscaleEnabled());
+    navigationRefreshButton.setChecked(
+        SystemProperties.getInt(Leaf3Settings.NAV_REFRESH_BUTTON, 0) != 0);
     scrollDetection.setChecked(
         SystemProperties.getInt(Leaf3Settings.SCROLL_DETECT, 1) != 0);
     settledQuality.setChecked(
@@ -214,6 +218,17 @@ public final class MainActivity extends Activity {
           public void onClick(View view) {
             setProperty(Leaf3Settings.FULL_REFRESH,
                         Long.toString(SystemClock.elapsedRealtimeNanos()));
+          }
+        });
+
+    navigationRefreshButton.setOnCheckedChangeListener(
+        new CompoundButton.OnCheckedChangeListener() {
+          @Override
+          public void onCheckedChanged(CompoundButton button, boolean checked) {
+            if (!loading) {
+              setProperty(Leaf3Settings.NAV_REFRESH_BUTTON,
+                          checked ? "1" : "0");
+            }
           }
         });
 
