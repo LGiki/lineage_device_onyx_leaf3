@@ -826,6 +826,15 @@ adb shell dumpsys SurfaceFlinger --list | grep NavigationBar
 The expected resource value is `true`, the interaction mode is `0`, and at
 least one `NavigationBar` layer should be listed.
 
+### Navigation buttons are too faint
+
+The Leaf3 keeps a white navigation-bar background for a clean E-Ink surface.
+During the build, its SystemUI patch pins the Back, Home, and Recents icons to
+dark foregrounds, even when an app does not request a light navigation bar.
+After flashing the rebuilt `system_ext.img` and matching `vbmeta.img`, open an
+app that previously showed white navigation icons and verify that all three
+buttons remain black.
+
 ### KOReader remains visible after pressing power
 
 The E-Ink panel retaining KOReader's page does not mean Android is still

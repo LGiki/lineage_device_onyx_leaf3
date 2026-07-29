@@ -343,6 +343,13 @@ readonly ASSIST_MANAGER_SOURCE="$SOURCE_DIR/frameworks/base/packages/SystemUI/sr
 python3 "$TARGET_DEVICE_DIR/tools/patch-systemui-assist-handler.py" \
   "$ASSIST_MANAGER_SOURCE"
 
+log "Pinning Leaf3 navigation icons dark for the white E-Ink navigation bar"
+readonly LIGHT_BAR_CONTROLLER_SOURCE="$SOURCE_DIR/frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/phone/LightBarController.java"
+[[ -f "$LIGHT_BAR_CONTROLLER_SOURCE" ]] || \
+  die "missing SystemUI LightBarController source: $LIGHT_BAR_CONTROLLER_SOURCE"
+python3 "$TARGET_DEVICE_DIR/tools/patch-systemui-dark-navigation-icons.py" \
+  "$LIGHT_BAR_CONTROLLER_SOURCE"
+
 log "Adding the Leaf3 SurfaceFlinger notifier and composer EPDC transport"
 readonly FRAMEWORKS_NATIVE_SOURCE="$SOURCE_DIR/frameworks/native"
 readonly SURFACEFLINGER_SOURCE="$SOURCE_DIR/frameworks/native/services/surfaceflinger/SurfaceFlinger.cpp"
@@ -448,6 +455,8 @@ grep -Fq 'android.permission.REAL_GET_TASKS' "$LEAF3_PRIVAPP_PERMISSIONS" || \
   die "Leaf3 Controls allowlist is missing foreground-task access"
 python3 "$TARGET_DEVICE_DIR/tools/patch-systemui-assist-handler.py" --check \
   "$ASSIST_MANAGER_SOURCE"
+python3 "$TARGET_DEVICE_DIR/tools/patch-systemui-dark-navigation-icons.py" --check \
+  "$LIGHT_BAR_CONTROLLER_SOURCE"
 python3 "$COMPOSER_EPDC_PATCHER" --check \
   "$FRAMEWORKS_NATIVE_SOURCE"
 python3 "$FRAME_NOTIFIER_PATCHER" --check \
