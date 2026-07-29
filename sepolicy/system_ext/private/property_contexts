@@ -1,3 +1,4 @@
 persist.sys.leaf3.    u:object_r:leaf3_config_prop:s0
 sys.leaf3.stat.       u:object_r:leaf3_stats_prop:s0
+sys.leaf3.full_refresh u:object_r:leaf3_refresh_prop:s0
 sys.leaf3.            u:object_r:leaf3_config_prop:s0

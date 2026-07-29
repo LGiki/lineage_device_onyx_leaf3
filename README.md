@@ -571,7 +571,10 @@ adb shell dumpsys SurfaceFlinger | grep 'Leaf3 composer EPDC'
 It eliminates screenshot capture, comparison, buffer copies, and direct EBC
 ioctls. Balanced/Normal, Speed, A2, Regal, Reader interval cleanup, dithering,
 settled Regal, regional cleanup, and transient moving-view ANIM hints are
-implemented natively. Raw-input/row-hash fallback detection,
+implemented natively. While native EPDC is active, SurfaceFlinger forces
+client composition so application content, status/navigation bars, dialogs,
+and other layers are all present in the framebuffer consumed by the E-Ink
+update. Raw-input/row-hash fallback detection,
 contrast/gamma staging, idle capture policy, and sleep-screen rendering are
 bridge-only; Leaf3 Controls disables those controls while composer mode is
 active.
@@ -763,6 +766,8 @@ It provides:
 - An optional navigation-bar refresh button, disabled by default.
 - Refresh-mode and clean-screen Quick Settings tiles.
 - Native bridge counters and timing diagnostics.
+- A confirmed Bridge/Composer backend selector that applies the persistent
+  choice with a normal reboot; Composer is explicitly marked experimental.
 - An opt-in global grayscale switch using SurfaceFlinger's color matrix.
 - Default-on touch-slop scroll detection with a row-hash fallback.
 - Per-view transient scrolling hints; composer-native mode applies ANIM only

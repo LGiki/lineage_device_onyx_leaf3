@@ -8,6 +8,4 @@
     android:contentDescription="@string/accessibility_leaf3_refresh"
     android:paddingStart="@dimen/navigation_key_padding"
     android:paddingEnd="@dimen/navigation_key_padding"
-    android:scaleType="center"
-    android:src="@drawable/ic_sysbar_leaf3_refresh"
-    android:tint="@android:color/black" />
+    android:scaleType="center" />

@@ -3,8 +3,10 @@ type leaf3_epdc_bridge_exec, system_file_type, exec_type, file_type;
 type leaf3_epdc_device, dev_type;
 type leaf3_backlight_sysfs, fs_type, sysfs_type;
 type leaf3_wakeup_sysfs, fs_type, sysfs_type;
-type leaf3_sleep_screen_data_file, file_type, data_file_type;
+type leaf3_sleep_screen_data_file, file_type, data_file_type,
+    core_data_file_type;
 system_public_prop(leaf3_config_prop)
+system_public_prop(leaf3_refresh_prop)
 system_public_prop(leaf3_stats_prop)
 
 init_daemon_domain(leaf3_epdc_bridge)
@@ -31,9 +33,13 @@ allow leaf3_epdc_bridge ion_device:chr_file { open read };
 
 # Read settings changed by the controls app or the ADB helper commands.
 get_prop(leaf3_epdc_bridge, leaf3_config_prop)
+get_prop(leaf3_epdc_bridge, leaf3_refresh_prop)
 set_prop(leaf3_epdc_bridge, leaf3_config_prop)
 set_prop(system_app, leaf3_config_prop)
 set_prop(shell, leaf3_config_prop)
+set_prop(platform_app, leaf3_refresh_prop)
+set_prop(system_app, leaf3_refresh_prop)
+set_prop(shell, leaf3_refresh_prop)
 allow system_app leaf3_sleep_screen_data_file:dir { add_name create getattr open remove_name search write };
 allow system_app leaf3_sleep_screen_data_file:file { create getattr open read rename setattr unlink write };
 allow leaf3_epdc_bridge leaf3_sleep_screen_data_file:dir search;
@@ -43,8 +49,17 @@ get_prop(surfaceflinger, leaf3_config_prop)
 set_prop(surfaceflinger, leaf3_config_prop)
 set_prop(surfaceflinger, leaf3_stats_prop)
 # Leaf3EinkHelper runs inside foreground application processes. These values
-# contain only public display policy and a package-name hash.
-get_prop(appdomain, leaf3_config_prop)
+# contain only public display policy and foreground identity tokens.
+get_prop({
+  ephemeral_app
+  platform_app
+  priv_app
+  system_app
+  untrusted_app
+  untrusted_app_25
+  untrusted_app_27
+  untrusted_app_29
+}, leaf3_config_prop)
 get_prop(system_app, leaf3_stats_prop)
 get_prop(shell, leaf3_stats_prop)
 

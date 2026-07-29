@@ -474,6 +474,8 @@ grep -Fq 'android.permission.CONTROL_DISPLAY_COLOR_TRANSFORMS' \
   die "Leaf3 Controls allowlist is missing display color-transform access"
 grep -Fq 'android.permission.REAL_GET_TASKS' "$LEAF3_PRIVAPP_PERMISSIONS" || \
   die "Leaf3 Controls allowlist is missing foreground-task access"
+grep -Fq 'android.permission.REBOOT' "$LEAF3_PRIVAPP_PERMISSIONS" || \
+  die "Leaf3 Controls allowlist is missing backend-switch reboot access"
 python3 "$TARGET_DEVICE_DIR/tools/patch-systemui-assist-handler.py" --check \
   "$ASSIST_MANAGER_SOURCE"
 python3 "$TARGET_DEVICE_DIR/tools/patch-systemui-dark-navigation-icons.py" --check \

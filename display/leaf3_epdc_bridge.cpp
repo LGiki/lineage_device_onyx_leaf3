@@ -2093,11 +2093,6 @@ ChangedRect unionRects(const ChangedRect &left, const ChangedRect &right) {
   };
 }
 
-bool overlaps(const ChangedRect &left, const ChangedRect &right) {
-  return left.left < right.right && right.left < left.right &&
-         left.top < right.bottom && right.top < left.bottom;
-}
-
 // Tracks damage on a tile grid so unrelated changes in distant parts of the
 // screen do not union into one screen-sized rectangle.
 class DamageMap {

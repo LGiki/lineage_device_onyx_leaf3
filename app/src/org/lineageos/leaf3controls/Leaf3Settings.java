@@ -32,6 +32,8 @@ final class Leaf3Settings {
   static final String FULL_REFRESH = "sys.leaf3.full_refresh";
   static final String NAV_REFRESH_BUTTON =
       "persist.sys.leaf3.nav_refresh_button";
+  static final String NAV_REFRESH_BUTTON_CHANGED =
+      "org.lineageos.leaf3controls.action.NAV_REFRESH_BUTTON_CHANGED";
   static final String IDLE_POLICY = "persist.sys.leaf3.idle_policy";
   static final String CLEANUP_POLICY = "persist.sys.leaf3.cleanup_policy";
   static final String SCROLL_DETECT = "persist.sys.leaf3.scroll_detect";

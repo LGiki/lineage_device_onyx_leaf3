@@ -154,6 +154,17 @@ class FrameNotifierPatcherTest(unittest.TestCase):
         )
         self.assertTrue(patcher.patched(source))
 
+    def test_controller_header_defines_nanosecond_type(self):
+        header = (
+            self.root
+            / "frameworks/native/services/surfaceflinger"
+            / "Leaf3EpdcController.h"
+        ).read_text()
+        self.assertIn("#include <utils/Timers.h>", header)
+        self.assertIn(
+            "const Rect &region, nsecs_t duration, int32_t ownerUid", header
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

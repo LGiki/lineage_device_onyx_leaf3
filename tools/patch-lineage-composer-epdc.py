@@ -5,10 +5,24 @@
 """Install the Leaf3 composer-native EPDC transport into LineageOS 18.1."""
 
 import argparse
+import re
 from pathlib import Path
 
 
-PATCHER_VERSION = "7"
+PATCHER_VERSION = "9"
+
+DEFAULT_FORCE_CLIENT_COMPOSITION = (
+    "    refreshArgs.devOptForceClientComposition = mDebugDisableHWC;\n"
+)
+LEAF3_FORCE_CLIENT_COMPOSITION = """\
+    refreshArgs.devOptForceClientComposition =
+            mDebugDisableHWC || Leaf3EpdcController::get().isActive();
+"""
+FORCE_CLIENT_COMPOSITION_PATTERN = re.compile(
+    r"^[ \t]*refreshArgs\.devOptForceClientComposition\s*=\s*"
+    r"[^;]+;[ \t]*(?:\n|$)",
+    re.MULTILINE,
+)
 
 PREVIOUS_ABSTRACT_EPDC_DAMAGE = (
     "    virtual void setLeaf3EpdcDamage(DisplayId displayId, const Region& damage,\n"
@@ -334,6 +348,18 @@ def upgrade_surfaceflinger_cpp(text: str) -> str:
             REFRESH_CALLBACK,
             "formatted forced-refresh callback",
         )
+    if (
+        '#include "Leaf3EpdcController.h"\n' in text
+        and LEAF3_FORCE_CLIENT_COMPOSITION not in text
+    ):
+        text, replacements = FORCE_CLIENT_COMPOSITION_PATTERN.subn(
+            LEAF3_FORCE_CLIENT_COMPOSITION,
+            text,
+        )
+        if replacements > 1:
+            raise ValueError(
+                "expected at most one SurfaceFlinger force-client assignment"
+            )
     return text
 
 
@@ -695,6 +721,12 @@ def patch_surfaceflinger_cpp(text: str) -> str:
         REFRESH_CALLBACK,
         "SurfaceFlinger HWC configuration",
     )
+    text = replace_once(
+        text,
+        DEFAULT_FORCE_CLIENT_COMPOSITION,
+        LEAF3_FORCE_CLIENT_COMPOSITION,
+        "composer-native client composition",
+    )
     return add_after(
         text,
         '    result.append("\\nDisplay identification data:\\n");\n',
@@ -835,6 +867,7 @@ REQUIRED_MARKERS = {
         "    Leaf3EpdcController::get().clearRefreshCallback();\n"
         "}\n",
         REFRESH_CALLBACK,
+        LEAF3_FORCE_CLIENT_COMPOSITION,
         "    result.append(Leaf3EpdcController::get().dump());\n",
     ),
 }
@@ -943,7 +976,15 @@ def main() -> int:
             if all(present):
                 writes[path] = text
             elif any(present):
-                raise ValueError(f"{path}: partial Leaf3 composer EPDC patch")
+                missing = [
+                    repr(marker)
+                    for marker, marker_present in zip(markers, present)
+                    if not marker_present
+                ]
+                raise ValueError(
+                    f"{path}: partial Leaf3 composer EPDC patch; "
+                    f"missing markers: {', '.join(missing)}"
+                )
             else:
                 writes[path] = transform(text)
 

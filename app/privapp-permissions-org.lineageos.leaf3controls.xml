@@ -6,5 +6,6 @@
     <privapp-permissions package="org.lineageos.leaf3controls">
         <permission name="android.permission.CONTROL_DISPLAY_COLOR_TRANSFORMS" />
         <permission name="android.permission.REAL_GET_TASKS" />
+        <permission name="android.permission.REBOOT" />
     </privapp-permissions>
 </permissions>

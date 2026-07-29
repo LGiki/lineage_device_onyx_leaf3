@@ -298,6 +298,97 @@ Error Composer::presentDisplay(Display display, int* outPresentFence)
             ),
             patcher.REFRESH_CALLBACK,
         )
+        upgraded_surfaceflinger = patcher.upgrade_surfaceflinger_cpp(
+            '#include "Leaf3EpdcController.h"\n'
+            + patcher.DEFAULT_FORCE_CLIENT_COMPOSITION
+        )
+        self.assertEqual(
+            upgraded_surfaceflinger,
+            '#include "Leaf3EpdcController.h"\n'
+            + patcher.LEAF3_FORCE_CLIENT_COMPOSITION,
+        )
+        formatted_surfaceflinger = patcher.upgrade_surfaceflinger_cpp(
+            '#include "Leaf3EpdcController.h"\n'
+            "    refreshArgs.devOptForceClientComposition =\n"
+            "        mDebugDisableHWC ||\n"
+            "        Leaf3EpdcController::get().isActive();\n"
+        )
+        self.assertEqual(
+            formatted_surfaceflinger,
+            '#include "Leaf3EpdcController.h"\n'
+            + patcher.LEAF3_FORCE_CLIENT_COMPOSITION,
+        )
+        macro_wrapped_surfaceflinger = patcher.upgrade_surfaceflinger_cpp(
+            '#include "Leaf3EpdcController.h"\n'
+            "    refreshArgs.devOptForceClientComposition =\n"
+            "            mDebugDisableHWC ||\n"
+            "            CC_UNLIKELY(Leaf3EpdcController::get().isActive());\n"
+        )
+        self.assertEqual(
+            macro_wrapped_surfaceflinger,
+            '#include "Leaf3EpdcController.h"\n'
+            + patcher.LEAF3_FORCE_CLIENT_COMPOSITION,
+        )
+        wrapped_old_surfaceflinger = patcher.upgrade_surfaceflinger_cpp(
+            '#include "Leaf3EpdcController.h"\n'
+            "    refreshArgs.devOptForceClientComposition =\n"
+            "            mDebugDisableHWC;\n"
+        )
+        self.assertEqual(
+            wrapped_old_surfaceflinger,
+            '#include "Leaf3EpdcController.h"\n'
+            + patcher.LEAF3_FORCE_CLIENT_COMPOSITION,
+        )
+        prior_markers = list(
+            patcher.REQUIRED_MARKERS[
+                "services/surfaceflinger/SurfaceFlinger.cpp"
+            ]
+        )
+        prior_markers.remove(patcher.LEAF3_FORCE_CLIENT_COMPOSITION)
+        upgraded_partial_surfaceflinger = patcher.upgrade_surfaceflinger_cpp(
+            "\n".join(prior_markers)
+            + "\n    refreshArgs.devOptForceClientComposition =\n"
+            "        mDebugDisableHWC ||\n"
+            "        Leaf3EpdcController::get().isActive();\n"
+        )
+        self.assertTrue(
+            all(
+                marker in upgraded_partial_surfaceflinger
+                for marker in patcher.REQUIRED_MARKERS[
+                    "services/surfaceflinger/SurfaceFlinger.cpp"
+                ]
+            )
+        )
+        fresh_surfaceflinger = patcher.upgrade_surfaceflinger_cpp(
+            patcher.DEFAULT_FORCE_CLIENT_COMPOSITION
+        )
+        self.assertEqual(
+            fresh_surfaceflinger,
+            patcher.DEFAULT_FORCE_CLIENT_COMPOSITION,
+        )
+        surfaceflinger_fixture = (
+            '#include "LayerVector.h"\n'
+            "SurfaceFlinger::~SurfaceFlinger() = default;\n"
+            "    mCompositionEngine->getHwComposer().setConfiguration(this, "
+            "getBE().mComposerSequenceId);\n"
+            + patcher.DEFAULT_FORCE_CLIENT_COMPOSITION
+            + '    result.append("\\nDisplay identification data:\\n");\n'
+        )
+        patched_surfaceflinger = patcher.patch_surfaceflinger_cpp(
+            surfaceflinger_fixture
+        )
+        self.assertNotIn(
+            patcher.DEFAULT_FORCE_CLIENT_COMPOSITION,
+            patched_surfaceflinger,
+        )
+        self.assertTrue(
+            all(
+                marker in patched_surfaceflinger
+                for marker in patcher.REQUIRED_MARKERS[
+                    "services/surfaceflinger/SurfaceFlinger.cpp"
+                ]
+            )
+        )
         hwcomposer = "\n".join(
             patcher.REQUIRED_MARKERS[
                 "services/surfaceflinger/DisplayHardware/HWComposer.cpp"
@@ -317,6 +408,15 @@ Error Composer::presentDisplay(Display display, int* outPresentFence)
         self.assertIn(
             "isLeaf3CommitEpdcCommand(static_cast<uint32_t>(command))",
             composer,
+        )
+        surfaceflinger = "\n".join(
+            patcher.REQUIRED_MARKERS[
+                "services/surfaceflinger/SurfaceFlinger.cpp"
+            ]
+        )
+        self.assertIn(
+            "mDebugDisableHWC || Leaf3EpdcController::get().isActive()",
+            surfaceflinger,
         )
 
     def test_production_policy_behavior(self):

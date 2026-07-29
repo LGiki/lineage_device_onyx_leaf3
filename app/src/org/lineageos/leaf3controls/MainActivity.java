@@ -13,6 +13,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.os.SystemClock;
 import android.os.SystemProperties;
 import android.provider.Settings;
@@ -85,6 +86,7 @@ public final class MainActivity extends Activity {
     final RadioGroup refreshModes = findViewById(R.id.refresh_modes);
     idlePolicies = findViewById(R.id.idle_policies);
     final RadioGroup cleanupPolicies = findViewById(R.id.cleanup_policies);
+    final RadioGroup backendModes = findViewById(R.id.backend_modes);
     final RadioGroup navigation = findViewById(R.id.navigation);
     final View refreshPage = findViewById(R.id.page_refresh);
     final View tuningPage = findViewById(R.id.page_tuning);
@@ -124,6 +126,9 @@ public final class MainActivity extends Activity {
     selectCleanupPolicy(
         cleanupPolicies,
         SystemProperties.get(Leaf3Settings.CLEANUP_POLICY, "balanced"));
+    selectBackend(
+        backendModes,
+        SystemProperties.get(Leaf3Settings.EPDC_BACKEND, "bridge"));
 
     final int storedBrightnessOverride =
         SystemProperties.getInt(FRONTLIGHT_BRIGHTNESS, -1);
@@ -227,6 +232,9 @@ public final class MainActivity extends Activity {
             if (!loading) {
               setProperty(Leaf3Settings.NAV_REFRESH_BUTTON,
                           checked ? "1" : "0");
+              sendBroadcast(
+                  new Intent(Leaf3Settings.NAV_REFRESH_BUTTON_CHANGED)
+                      .setPackage("com.android.systemui"));
             }
           }
         });
@@ -240,6 +248,11 @@ public final class MainActivity extends Activity {
 
     findViewById(R.id.refresh_diagnostics)
         .setOnClickListener(view -> updateDiagnostics());
+
+    findViewById(R.id.apply_backend)
+        .setOnClickListener(view ->
+            confirmBackendSwitch(backendForId(
+                backendModes.getCheckedRadioButtonId())));
 
     frontlightEnabled.setOnCheckedChangeListener(
         new CompoundButton.OnCheckedChangeListener() {
@@ -713,6 +726,54 @@ public final class MainActivity extends Activity {
     updateDiagnostics();
   }
 
+  private void confirmBackendSwitch(String backend) {
+    final String requested =
+        SystemProperties.get(Leaf3Settings.EPDC_BACKEND, "bridge");
+    final String active = SystemProperties.get(
+        Leaf3Settings.EPDC_BACKEND_ACTIVE, requested);
+    if (backend.equals(requested) && backend.equals(active)) {
+      Toast.makeText(this, R.string.backend_already_active,
+                     Toast.LENGTH_SHORT).show();
+      return;
+    }
+
+    final int message = "composer".equals(backend)
+        ? R.string.backend_composer_confirmation
+        : R.string.backend_bridge_confirmation;
+    new AlertDialog.Builder(this)
+        .setTitle(R.string.backend_confirmation_title)
+        .setMessage(message)
+        .setNegativeButton(android.R.string.cancel, null)
+        .setPositiveButton(
+            R.string.backend_apply_and_reboot,
+            (dialog, which) -> applyBackendAndReboot(backend))
+        .show();
+  }
+
+  private void applyBackendAndReboot(String backend) {
+    try {
+      SystemProperties.set(Leaf3Settings.EPDC_BACKEND, backend);
+    } catch (RuntimeException exception) {
+      Toast.makeText(
+          this,
+          getString(R.string.property_error, Leaf3Settings.EPDC_BACKEND),
+          Toast.LENGTH_LONG).show();
+      return;
+    }
+
+    try {
+      final PowerManager powerManager = getSystemService(PowerManager.class);
+      if (powerManager == null) {
+        throw new IllegalStateException("PowerManager is unavailable");
+      }
+      powerManager.reboot(null);
+    } catch (RuntimeException exception) {
+      Toast.makeText(this, R.string.backend_reboot_failed,
+                     Toast.LENGTH_LONG).show();
+      updateDiagnostics();
+    }
+  }
+
   private boolean animationsDisabled() {
     return Settings.Global.getFloat(getContentResolver(),
                                     Settings.Global.WINDOW_ANIMATION_SCALE,
@@ -800,6 +861,10 @@ public final class MainActivity extends Activity {
     return "balanced";
   }
 
+  private static String backendForId(int checkedId) {
+    return checkedId == R.id.backend_composer ? "composer" : "bridge";
+  }
+
   private static void selectRefreshMode(RadioGroup group, String mode) {
     if ("normal".equals(mode)) {
       group.check(R.id.mode_normal);
@@ -834,6 +899,12 @@ public final class MainActivity extends Activity {
     } else {
       group.check(R.id.cleanup_balanced);
     }
+  }
+
+  private static void selectBackend(RadioGroup group, String backend) {
+    group.check("composer".equals(backend)
+                    ? R.id.backend_composer
+                    : R.id.backend_bridge);
   }
 
   private static void selectSleepScreen(RadioGroup group, String mode) {

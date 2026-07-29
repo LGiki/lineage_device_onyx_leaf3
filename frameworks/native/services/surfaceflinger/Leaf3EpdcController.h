@@ -6,6 +6,7 @@
 
 #include <ui/Rect.h>
 #include <ui/Region.h>
+#include <utils/Timers.h>
 
 #include <cstdint>
 #include <functional>

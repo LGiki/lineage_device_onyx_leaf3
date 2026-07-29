@@ -452,10 +452,40 @@
                 android:text="@string/diagnostics_description" />
 
             <TextView
+                style="@style/Leaf3Eyebrow"
+                android:layout_marginTop="12dp"
+                android:text="@string/display_backend" />
+
+            <RadioGroup
+                android:id="@+id/backend_modes"
+                style="@style/Leaf3CompactChoiceGroup">
+
+                <RadioButton
+                    android:id="@+id/backend_bridge"
+                    style="@style/Leaf3CompactChoice"
+                    android:text="@string/backend_bridge" />
+
+                <RadioButton
+                    android:id="@+id/backend_composer"
+                    style="@style/Leaf3CompactChoice"
+                    android:text="@string/backend_composer" />
+            </RadioGroup>
+
+            <TextView
+                style="@style/Leaf3Description"
+                android:text="@string/backend_description" />
+
+            <Button
+                android:id="@+id/apply_backend"
+                style="@style/Leaf3WideActionButton"
+                android:layout_marginTop="10dp"
+                android:text="@string/backend_apply_and_reboot" />
+
+            <TextView
                 android:id="@+id/diagnostics"
                 android:layout_width="match_parent"
                 android:layout_height="0dp"
-                android:layout_marginTop="14dp"
+                android:layout_marginTop="12dp"
                 android:layout_weight="1"
                 android:background="@drawable/panel_outline"
                 android:fontFamily="monospace"
@@ -468,7 +498,7 @@
             <Button
                 android:id="@+id/refresh_diagnostics"
                 style="@style/Leaf3WideActionButton"
-                android:layout_marginTop="12dp"
+                android:layout_marginTop="10dp"
                 android:text="@string/refresh_diagnostics" />
         </LinearLayout>
     </FrameLayout>
