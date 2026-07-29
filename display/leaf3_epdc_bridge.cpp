@@ -25,6 +25,7 @@
 #include <sys/eventfd.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #define _REALLY_INCLUDE_SYS__SYSTEM_PROPERTIES_H_
 #include <sys/_system_properties.h>
 #include <time.h>
@@ -170,6 +171,8 @@ constexpr char kActiveRefreshModeProperty[] = "sys.leaf3.active_refresh_mode";
 constexpr char kActivePackageProperty[] = "sys.leaf3.active_package";
 constexpr char kFullRefreshProperty[] = "sys.leaf3.full_refresh";
 constexpr char kClearOnSleepProperty[] = "persist.sys.leaf3.clear_on_sleep";
+constexpr char kSleepScreenProperty[] = "persist.sys.leaf3.sleep_screen";
+constexpr char kSleepScreenImagePath[] = "/data/misc/leaf3/sleep-screen.argb";
 constexpr char kIdlePolicyProperty[] = "persist.sys.leaf3.idle_policy";
 constexpr char kCleanupPolicyProperty[] = "persist.sys.leaf3.cleanup_policy";
 constexpr char kContentAwareProperty[] = "persist.sys.leaf3.content_aware";
@@ -269,6 +272,12 @@ enum class CaptureMode {
   kNotify,
 };
 
+enum class SleepScreen {
+  kClear,
+  kRetain,
+  kImage,
+};
+
 enum class ContentClass {
   kBiLevel,
   kGrayscale,
@@ -285,7 +294,7 @@ struct Settings {
   int contrast = 0;
   int gamma = 100;
   bool dither = true;
-  bool clear_on_sleep = true;
+  SleepScreen sleep_screen = SleepScreen::kClear;
   bool interactive = true;
   CaptureMode capture_mode = CaptureMode::kNotify;
   bool frontlight_enabled = true;
@@ -467,6 +476,7 @@ public:
     const char *gamma = read(gamma_, &changed);
     const char *dither = read(dither_, &changed);
     const char *clear_on_sleep = read(clear_on_sleep_, &changed);
+    const char *sleep_screen = read(sleep_screen_, &changed);
     const char *interactive = read(interactive_, &changed);
     const char *capture_mode = read(capture_mode_, &changed);
     const char *frontlight_enabled = read(frontlight_enabled_, &changed);
@@ -535,7 +545,20 @@ public:
     settings_.contrast = std::clamp(parseInteger(contrast, 0), -50, 50);
     settings_.gamma = std::clamp(parseInteger(gamma, 100), 50, 200);
     settings_.dither = parseInteger(dither, 1) != 0;
-    settings_.clear_on_sleep = parseInteger(clear_on_sleep, 1) != 0;
+    const std::string sleep_screen_value = propertyValue(sleep_screen);
+    if (sleep_screen_value == "retain") {
+      settings_.sleep_screen = SleepScreen::kRetain;
+    } else if (sleep_screen_value == "image") {
+      settings_.sleep_screen = SleepScreen::kImage;
+    } else if (sleep_screen_value == "clear") {
+      settings_.sleep_screen = SleepScreen::kClear;
+    } else {
+      // Existing installations only have clear_on_sleep. Keep their behavior
+      // until Leaf3 Controls writes the new explicit three-state setting.
+      settings_.sleep_screen = parseInteger(clear_on_sleep, 1) != 0
+                                   ? SleepScreen::kClear
+                                   : SleepScreen::kRetain;
+    }
     settings_.interactive = parseInteger(interactive, 1) != 0;
     // The virtual-display stream remains quarantined. "notify" retains
     // ScreenshotClient capture and changes only how SurfaceFlinger wakes it.
@@ -579,6 +602,7 @@ private:
   CachedStringProperty gamma_{kGammaProperty};
   CachedStringProperty dither_{kDitherProperty};
   CachedStringProperty clear_on_sleep_{kClearOnSleepProperty};
+  CachedStringProperty sleep_screen_{kSleepScreenProperty};
   CachedStringProperty interactive_{kInteractiveProperty};
   CachedStringProperty capture_mode_{kCaptureModeProperty};
   CachedStringProperty frontlight_enabled_{kFrontlightEnabledProperty};
@@ -1920,6 +1944,45 @@ public:
                       /*dither=*/true, /*full_refresh=*/true);
   }
 
+  bool showSleepImage() {
+    if (buffer_ == MAP_FAILED) {
+      return false;
+    }
+
+    const int image_fd = open(kSleepScreenImagePath, O_RDONLY | O_CLOEXEC);
+    if (image_fd < 0) {
+      ALOGE("could not open sleep image %s: %s", kSleepScreenImagePath,
+            strerror(errno));
+      return false;
+    }
+    struct stat image_stat = {};
+    const bool valid_size =
+        fstat(image_fd, &image_stat) == 0 &&
+        image_stat.st_size == static_cast<off_t>(buffer_size_);
+    if (!valid_size) {
+      ALOGE("sleep image has an invalid size");
+      close(image_fd);
+      return false;
+    }
+
+    uint8_t *destination = static_cast<uint8_t *>(buffer_);
+    size_t remaining = buffer_size_;
+    while (remaining != 0) {
+      const ssize_t bytes_read = read(image_fd, destination, remaining);
+      if (bytes_read <= 0) {
+        ALOGE("could not read sleep image: %s",
+              bytes_read == 0 ? "unexpected end of file" : strerror(errno));
+        close(image_fd);
+        return false;
+      }
+      destination += bytes_read;
+      remaining -= static_cast<size_t>(bytes_read);
+    }
+    close(image_fd);
+    return sendUpdate(ChangedRect{0, 0, width_, height_}, kWaveformGc16,
+                      /*dither=*/true, /*full_refresh=*/true);
+  }
+
 private:
   bool sendUpdate(const ChangedRect &rect, uint32_t waveform, bool dither,
                   bool full_refresh) {
@@ -2779,7 +2842,7 @@ bool runComposerSupportLoop() {
   uint32_t serial = __system_property_area_serial();
   const int64_t ready_deadline_us = monotonicMicros() + 5000000;
   bool ready = false;
-  bool warned_sleep_clear = false;
+  bool warned_sleep_screen = false;
 
   for (;;) {
     settings = settings_cache.read();
@@ -2829,10 +2892,11 @@ bool runComposerSupportLoop() {
       }
     }
     was_interactive = settings.interactive;
-    if (ready && settings.clear_on_sleep && !warned_sleep_clear) {
-      ALOGW("clear-on-sleep is unavailable in composer-native mode; "
+    if (ready && settings.sleep_screen != SleepScreen::kRetain &&
+        !warned_sleep_screen) {
+      ALOGW("sleep-screen rendering is unavailable in composer-native mode; "
             "the retained panel image will remain");
-      warned_sleep_clear = true;
+      warned_sleep_screen = true;
     }
 
     if (!ready) {
@@ -2974,11 +3038,17 @@ int main() {
 
     if (!settings.interactive) {
       if (display_was_on) {
-        if (initialized && settings.clear_on_sleep) {
-          ALOGI("display is off; clearing retained frame");
+        if (initialized && settings.sleep_screen != SleepScreen::kRetain) {
+          ALOGI("display is off; rendering sleep screen");
           const int64_t submit_start_us = monotonicMicros();
-          if (!ebc.clear()) {
-            return 1;
+          const bool rendered = settings.sleep_screen == SleepScreen::kImage
+                                    ? ebc.showSleepImage()
+                                    : ebc.clear();
+          if (!rendered) {
+            if (settings.sleep_screen != SleepScreen::kImage || !ebc.clear()) {
+              return 1;
+            }
+            ALOGW("sleep image unavailable; cleared the panel instead");
           }
           ++stats.full_updates;
           stats.updated_pixels += panel_pixels;

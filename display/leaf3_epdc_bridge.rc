@@ -6,6 +6,8 @@ service leaf3-epdc-bridge /system_ext/bin/leaf3_epdc_bridge
     disabled
 
 on property:sys.boot_completed=1
+    mkdir /data/misc/leaf3 0770 system system
+    restorecon_recursive /data/misc/leaf3
     restorecon /dev/ebc
     chown system graphics /dev/ebc
     chmod 0660 /dev/ebc

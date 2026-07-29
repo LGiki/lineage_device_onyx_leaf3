@@ -52,7 +52,7 @@
     <string name="idle_capture">Idle capture</string>
     <string name="tuning_title">Refresh tuning</string>
     <string name="tuning_description">Fine-tune responsiveness, battery use, and how quickly fast-update ghosting is cleaned.</string>
-    <string name="composer_limitations">Composer-native EPDC is active. Idle capture, automatic scroll detection, sleep clearing, contrast, and gamma belong to the screenshot bridge and are unavailable. Refresh modes, dithering, Reader cleanup, settled Regal, and regional ghost cleanup remain active.</string>
+    <string name="composer_limitations">Composer-native EPDC is active. Idle capture, automatic scroll detection, sleep-screen rendering, contrast, and gamma belong to the screenshot bridge and are unavailable. Refresh modes, dithering, Reader cleanup, settled Regal, and regional ghost cleanup remain active.</string>
     <string name="idle_description">How often the bridge checks an unchanged screen. Touch always wakes it immediately.</string>
     <string name="idle_responsive_short">Responsive\n1 sec</string>
     <string name="idle_balanced_short">Balanced\n2 sec</string>
@@ -77,7 +77,15 @@
         <item>Never clean automatically</item>
     </string-array>
     <string name="disable_animations">Disable Android animations (recommended)</string>
-    <string name="clear_on_sleep">Clear retained page while sleeping</string>
+    <string name="sleep_screen">Sleep screen</string>
+    <string name="sleep_screen_description">Choose what remains on the E-Ink panel while Android is asleep. The Android lock screen appears after wake.</string>
+    <string name="sleep_screen_clear">Clear to white</string>
+    <string name="sleep_screen_retain">Retain page</string>
+    <string name="sleep_screen_image">Custom image</string>
+    <string name="choose_sleep_image">Choose sleep image</string>
+    <string name="sleep_image_missing">Choose a sleep image before selecting Custom image.</string>
+    <string name="sleep_image_saved">Sleep image saved.</string>
+    <string name="sleep_image_error">Could not prepare that image.</string>
     <string name="grayscale">Global grayscale UI</string>
     <string name="scroll_detection">Fast waveform while scrolling</string>
     <string name="frontlight">Frontlight</string>

@@ -571,9 +571,9 @@ adb shell dumpsys SurfaceFlinger | grep 'Leaf3 composer EPDC'
 It eliminates screenshot capture, comparison, buffer copies, and direct EBC
 ioctls. Balanced/Normal, Speed, A2, Regal, Reader interval cleanup, dithering,
 settled Regal, and regional cleanup are implemented natively. Automatic
-scroll detection, contrast/gamma staging, idle capture policy, and white
-clear-on-sleep are bridge-only; Leaf3 Controls disables them while composer
-mode is active.
+scroll detection, contrast/gamma staging, idle capture policy, and sleep-screen
+rendering are bridge-only; Leaf3 Controls disables them while composer mode is
+active.
 
 Return to the bridge immediately if the panel misbehaves:
 
@@ -694,7 +694,11 @@ this step, KOReader's last page remains visible while Android is asleep, which
 makes the navigation bar and notification shade appear frozen even though
 input is correctly disabled. A second power-button press wakes Android and the
 bridge then displays the current Android frame with a full refresh. Retaining
-the last page is still available as an explicit preference:
+the last page is still available as an explicit preference. Leaf3 Controls
+also supports a selected static sleep image; it is fitted without cropping to
+the 1264×1680 panel, converted to grayscale before suspend, and does not
+replace Android's keyguard after wake. The command-line aliases keep the first
+two choices available:
 
 ```sh
 adb shell leaf3-refresh clear-on-sleep
@@ -768,7 +772,8 @@ It provides:
 - A manual frontlight percentage override.
 - Cool-to-warm color-temperature control.
 - A switch to disable Android window, transition, and animator effects.
-- A switch to clear the retained application frame while sleeping.
+- A clear, retain, or custom-image sleep screen; the image is displayed only
+  while Android is asleep.
 
 The controls use the same persistent properties as `leaf3-refresh` and
 `leaf3-frontlight`, so changes made in the app are visible to the command-line

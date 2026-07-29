@@ -273,10 +273,42 @@
                 style="@style/Leaf3Switch"
                 android:text="@string/scroll_detection" />
 
-            <Switch
-                android:id="@+id/clear_on_sleep"
-                style="@style/Leaf3Switch"
-                android:text="@string/clear_on_sleep" />
+            <TextView
+                style="@style/Leaf3ControlLabel"
+                android:layout_marginTop="8dp"
+                android:text="@string/sleep_screen" />
+
+            <TextView
+                style="@style/Leaf3Description"
+                android:layout_marginTop="2dp"
+                android:text="@string/sleep_screen_description" />
+
+            <RadioGroup
+                android:id="@+id/sleep_screen_modes"
+                style="@style/Leaf3CompactChoiceGroup"
+                android:checkedButton="@id/sleep_screen_clear">
+
+                <RadioButton
+                    android:id="@+id/sleep_screen_clear"
+                    style="@style/Leaf3CompactChoice"
+                    android:text="@string/sleep_screen_clear" />
+
+                <RadioButton
+                    android:id="@+id/sleep_screen_retain"
+                    style="@style/Leaf3CompactChoice"
+                    android:text="@string/sleep_screen_retain" />
+
+                <RadioButton
+                    android:id="@+id/sleep_screen_image"
+                    style="@style/Leaf3CompactChoice"
+                    android:text="@string/sleep_screen_image" />
+            </RadioGroup>
+
+            <Button
+                android:id="@+id/choose_sleep_image"
+                style="@style/Leaf3WideActionButton"
+                android:layout_marginTop="2dp"
+                android:text="@string/choose_sleep_image" />
 
             <Switch
                 android:id="@+id/dither"

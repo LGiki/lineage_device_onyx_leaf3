@@ -5,6 +5,7 @@ active_mode_property=sys.leaf3.active_refresh_mode
 active_source_property=sys.leaf3.active_refresh_source
 refresh_property=sys.leaf3.full_refresh
 clear_on_sleep_property=persist.sys.leaf3.clear_on_sleep
+sleep_screen_property=persist.sys.leaf3.sleep_screen
 idle_policy_property=persist.sys.leaf3.idle_policy
 cleanup_policy_property=persist.sys.leaf3.cleanup_policy
 content_aware_property=persist.sys.leaf3.content_aware
@@ -194,10 +195,12 @@ case "${1:-status}" in
         ;;
     clear-on-sleep)
         setprop "$clear_on_sleep_property" 1
+        setprop "$sleep_screen_property" clear
         echo "Leaf3 will clear the retained frame while sleeping"
         ;;
     retain-on-sleep)
         setprop "$clear_on_sleep_property" 0
+        setprop "$sleep_screen_property" retain
         echo "Leaf3 will retain the last frame while sleeping"
         ;;
     animations-off)
@@ -217,6 +220,7 @@ case "${1:-status}" in
         active_mode="$(getprop "$active_mode_property")"
         active_source="$(getprop "$active_source_property")"
         clear_on_sleep="$(getprop "$clear_on_sleep_property")"
+        sleep_screen="$(getprop "$sleep_screen_property")"
         idle_policy="$(getprop "$idle_policy_property")"
         cleanup_policy="$(getprop "$cleanup_policy_property")"
         content_aware="$(getprop "$content_aware_property")"
@@ -291,9 +295,13 @@ case "${1:-status}" in
         echo "Reader cleanup interval: $page_interval"
         echo "Settled Regal quality: $settled_quality"
         echo "Tone mapping: contrast=$contrast gamma=$gamma dither=$dither"
-        echo "Clear retained frame on sleep: ${clear_on_sleep:-1}"
+        case "$sleep_screen" in
+            clear|retain|image) ;;
+            *) [ "$clear_on_sleep" = 0 ] && sleep_screen=retain || sleep_screen=clear ;;
+        esac
+        echo "Sleep screen: $sleep_screen"
         if [ "$epdc_backend_active" = composer ]; then
-            echo "Composer limitations: idle capture, contrast/gamma, content analysis, scroll detection, and white clear-on-sleep are inactive"
+            echo "Composer limitations: idle capture, contrast/gamma, content analysis, scroll detection, and sleep-screen rendering are inactive"
         fi
         ;;
     *)

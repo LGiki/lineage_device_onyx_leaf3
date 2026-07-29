@@ -3,6 +3,13 @@ package org.lineageos.leaf3controls;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.RectF;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -18,11 +25,23 @@ import android.widget.Spinner;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
+import java.io.BufferedOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 
 public final class MainActivity extends Activity {
   private static final int[] PAGE_INTERVALS = {1, 3, 5, 10, 30, 50, 0};
   private static final String CLEAR_ON_SLEEP =
       "persist.sys.leaf3.clear_on_sleep";
+  private static final String SLEEP_SCREEN =
+      "persist.sys.leaf3.sleep_screen";
+  private static final String SLEEP_SCREEN_DIRECTORY = "/data/misc/leaf3";
+  private static final String SLEEP_SCREEN_FILE = "sleep-screen.argb";
+  private static final int PICK_SLEEP_IMAGE = 1001;
+  private static final int PANEL_WIDTH = 1264;
+  private static final int PANEL_HEIGHT = 1680;
   private static final String FRONTLIGHT_ENABLED =
       "persist.sys.leaf3.frontlight_enabled";
   private static final String FRONTLIGHT_BRIGHTNESS =
@@ -46,7 +65,8 @@ public final class MainActivity extends Activity {
   private SeekBar contrast;
   private SeekBar gamma;
   private Switch followAndroidBrightness;
-  private Switch clearOnSleep;
+  private RadioGroup sleepScreenModes;
+  private View chooseSleepImage;
   private Switch scrollDetection;
   private RadioGroup idlePolicies;
   private TextView brightnessLabel;
@@ -73,7 +93,8 @@ public final class MainActivity extends Activity {
     final View statusPage = findViewById(R.id.page_status);
     final Switch frontlightEnabled = findViewById(R.id.frontlight_enabled);
     final Switch disableAnimations = findViewById(R.id.disable_animations);
-    clearOnSleep = findViewById(R.id.clear_on_sleep);
+    sleepScreenModes = findViewById(R.id.sleep_screen_modes);
+    chooseSleepImage = findViewById(R.id.choose_sleep_image);
     final Switch grayscale = findViewById(R.id.grayscale);
     scrollDetection = findViewById(R.id.scroll_detection);
     final Switch settledQuality = findViewById(R.id.settled_quality);
@@ -110,7 +131,7 @@ public final class MainActivity extends Activity {
     frontlightEnabled.setChecked(
         SystemProperties.getInt(FRONTLIGHT_ENABLED, 1) != 0);
     disableAnimations.setChecked(animationsDisabled());
-    clearOnSleep.setChecked(SystemProperties.getInt(CLEAR_ON_SLEEP, 1) != 0);
+    selectSleepScreen(sleepScreenModes, sleepScreenMode());
     grayscale.setChecked(Leaf3Settings.isGrayscaleEnabled());
     scrollDetection.setChecked(
         SystemProperties.getInt(Leaf3Settings.SCROLL_DETECT, 1) != 0);
@@ -226,15 +247,24 @@ public final class MainActivity extends Activity {
           }
         });
 
-    clearOnSleep.setOnCheckedChangeListener(
-        new CompoundButton.OnCheckedChangeListener() {
+    sleepScreenModes.setOnCheckedChangeListener(
+        new RadioGroup.OnCheckedChangeListener() {
           @Override
-          public void onCheckedChanged(CompoundButton button, boolean checked) {
+          public void onCheckedChanged(RadioGroup group, int checkedId) {
             if (!loading) {
-              setProperty(CLEAR_ON_SLEEP, checked ? "1" : "0");
+              final String mode = sleepScreenModeForId(checkedId);
+              if ("image".equals(mode) && !sleepScreenFile().isFile()) {
+                Toast.makeText(MainActivity.this, R.string.sleep_image_missing,
+                               Toast.LENGTH_LONG).show();
+                selectSleepScreen(sleepScreenModes, "clear");
+                return;
+              }
+              setProperty(SLEEP_SCREEN, mode);
             }
           }
         });
+
+    chooseSleepImage.setOnClickListener(view -> chooseSleepImage());
 
     grayscale.setOnCheckedChangeListener(
         new CompoundButton.OnCheckedChangeListener() {
@@ -374,6 +404,19 @@ public final class MainActivity extends Activity {
     super.onPause();
   }
 
+  @Override
+  protected void onActivityResult(int requestCode, int resultCode,
+                                  Intent data) {
+    super.onActivityResult(requestCode, resultCode, data);
+    if (requestCode != PICK_SLEEP_IMAGE || resultCode != RESULT_OK ||
+        data == null || data.getData() == null) {
+      return;
+    }
+    final Uri image = data.getData();
+    chooseSleepImage.setEnabled(false);
+    new Thread(() -> importSleepImage(image)).start();
+  }
+
   private void updateBackendControls() {
     if (composerLimitations == null || idlePolicies == null) {
       return;
@@ -391,7 +434,9 @@ public final class MainActivity extends Activity {
     idlePolicies.setEnabled(!composerBackend);
     setChildrenEnabled(idlePolicies, !composerBackend);
     scrollDetection.setEnabled(!composerBackend);
-    clearOnSleep.setEnabled(!composerBackend);
+    sleepScreenModes.setEnabled(!composerBackend);
+    setChildrenEnabled(sleepScreenModes, !composerBackend);
+    chooseSleepImage.setEnabled(!composerBackend);
     contrast.setEnabled(!composerBackend);
     gamma.setEnabled(!composerBackend);
     contrastLabel.setEnabled(!composerBackend);
@@ -420,6 +465,127 @@ public final class MainActivity extends Activity {
 
   private void updateGammaLabel(int value) {
     gammaLabel.setText(getString(R.string.gamma_value, value));
+  }
+
+  private String sleepScreenMode() {
+    final String mode = SystemProperties.get(SLEEP_SCREEN, "");
+    if ("clear".equals(mode) || "retain".equals(mode) ||
+        "image".equals(mode)) {
+      return mode;
+    }
+    final String migrated = SystemProperties.getInt(CLEAR_ON_SLEEP, 1) != 0
+        ? "clear" : "retain";
+    SystemProperties.set(SLEEP_SCREEN, migrated);
+    return migrated;
+  }
+
+  private void chooseSleepImage() {
+    final Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+    intent.addCategory(Intent.CATEGORY_OPENABLE);
+    intent.setType("image/*");
+    startActivityForResult(intent, PICK_SLEEP_IMAGE);
+  }
+
+  private void importSleepImage(Uri image) {
+    try {
+      writeSleepImage(image);
+      runOnUiThread(() -> {
+        setProperty(SLEEP_SCREEN, "image");
+        selectSleepScreen(sleepScreenModes, "image");
+        chooseSleepImage.setEnabled(!isComposerBackend());
+        Toast.makeText(this, R.string.sleep_image_saved, Toast.LENGTH_SHORT)
+            .show();
+      });
+    } catch (IOException | RuntimeException exception) {
+      runOnUiThread(() -> {
+        chooseSleepImage.setEnabled(!isComposerBackend());
+        Toast.makeText(this, R.string.sleep_image_error, Toast.LENGTH_LONG)
+            .show();
+      });
+    }
+  }
+
+  private void writeSleepImage(Uri image) throws IOException {
+    final BitmapFactory.Options bounds = new BitmapFactory.Options();
+    bounds.inJustDecodeBounds = true;
+    try (InputStream stream = getContentResolver().openInputStream(image)) {
+      if (stream == null) {
+        throw new IOException("could not open image");
+      }
+      BitmapFactory.decodeStream(stream, null, bounds);
+    }
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+      throw new IOException("not a decodable image");
+    }
+    final BitmapFactory.Options options = new BitmapFactory.Options();
+    options.inSampleSize = 1;
+    options.inPreferredConfig = Bitmap.Config.ARGB_8888;
+    while (bounds.outWidth / options.inSampleSize > PANEL_WIDTH * 2 ||
+           bounds.outHeight / options.inSampleSize > PANEL_HEIGHT * 2) {
+      options.inSampleSize *= 2;
+    }
+    final Bitmap decoded;
+    try (InputStream stream = getContentResolver().openInputStream(image)) {
+      decoded = stream == null ? null
+          : BitmapFactory.decodeStream(stream, null, options);
+      if (decoded == null) {
+        throw new IOException("could not decode image");
+      }
+    }
+    final Bitmap source = decoded;
+    final Bitmap panel = Bitmap.createBitmap(PANEL_WIDTH, PANEL_HEIGHT,
+                                             Bitmap.Config.ARGB_8888);
+    final Canvas canvas = new Canvas(panel);
+    canvas.drawColor(Color.WHITE);
+    final float scale = Math.min((float) PANEL_WIDTH / source.getWidth(),
+                                 (float) PANEL_HEIGHT / source.getHeight());
+    final float width = source.getWidth() * scale;
+    final float height = source.getHeight() * scale;
+    final float left = (PANEL_WIDTH - width) / 2.0f;
+    final float top = (PANEL_HEIGHT - height) / 2.0f;
+    final Paint paint = new Paint(Paint.FILTER_BITMAP_FLAG |
+                                  Paint.DITHER_FLAG);
+    canvas.drawBitmap(source, null, new RectF(left, top, left + width,
+                                               top + height), paint);
+    source.recycle();
+
+    final File directory = new File(SLEEP_SCREEN_DIRECTORY);
+    if (!directory.isDirectory() && !directory.mkdirs()) {
+      panel.recycle();
+      throw new IOException("could not create sleep-image directory");
+    }
+    final File output = sleepScreenFile();
+    final File temporary = new File(directory, SLEEP_SCREEN_FILE + ".new");
+    final int[] pixels = new int[PANEL_WIDTH];
+    final byte[] row = new byte[PANEL_WIDTH * 4];
+    try (BufferedOutputStream stream = new BufferedOutputStream(
+             new FileOutputStream(temporary))) {
+      for (int y = 0; y < PANEL_HEIGHT; ++y) {
+        panel.getPixels(pixels, 0, PANEL_WIDTH, 0, y, PANEL_WIDTH, 1);
+        for (int x = 0; x < PANEL_WIDTH; ++x) {
+          final int color = pixels[x];
+          final int gray = (((color >> 16) & 0xff) * 77 +
+                            ((color >> 8) & 0xff) * 150 +
+                            (color & 0xff) * 29) >> 8;
+          final int offset = x * 4;
+          row[offset] = (byte) gray;
+          row[offset + 1] = (byte) gray;
+          row[offset + 2] = (byte) gray;
+          row[offset + 3] = (byte) 0xff;
+        }
+        stream.write(row);
+      }
+    } finally {
+      panel.recycle();
+    }
+    if (!temporary.renameTo(output)) {
+      temporary.delete();
+      throw new IOException("could not store sleep image");
+    }
+  }
+
+  private static File sleepScreenFile() {
+    return new File(SLEEP_SCREEN_DIRECTORY, SLEEP_SCREEN_FILE);
   }
 
   private void showModeSpecifications() {
@@ -653,6 +819,26 @@ public final class MainActivity extends Activity {
     } else {
       group.check(R.id.cleanup_balanced);
     }
+  }
+
+  private static void selectSleepScreen(RadioGroup group, String mode) {
+    if ("retain".equals(mode)) {
+      group.check(R.id.sleep_screen_retain);
+    } else if ("image".equals(mode)) {
+      group.check(R.id.sleep_screen_image);
+    } else {
+      group.check(R.id.sleep_screen_clear);
+    }
+  }
+
+  private static String sleepScreenModeForId(int checkedId) {
+    if (checkedId == R.id.sleep_screen_retain) {
+      return "retain";
+    }
+    if (checkedId == R.id.sleep_screen_image) {
+      return "image";
+    }
+    return "clear";
   }
 
   private void updateDiagnostics() {
