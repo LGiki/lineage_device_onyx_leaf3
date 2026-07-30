@@ -91,6 +91,46 @@ detect_host_family() {
   esac
 }
 
+select_jdk11() {
+  local candidate java_version javac_version
+  local -a candidates=()
+
+  # Prefer an explicit environment selection, then the active compiler, before
+  # checking the standard distro installation locations. This lets a builder
+  # keep a newer system Java alternative while using JDK 11 only for this run.
+  if [[ -n "${JAVA_HOME:-}" ]]; then
+    candidates+=("$JAVA_HOME")
+  fi
+  if command -v javac >/dev/null 2>&1; then
+    candidates+=("$(cd -- "$(dirname -- "$(readlink -f "$(command -v javac)")")/.." && pwd)")
+  fi
+
+  case "$HOST_FAMILY" in
+    arch) candidates+=(/usr/lib/jvm/java-11-openjdk) ;;
+    debian) candidates+=(/usr/lib/jvm/java-11-openjdk-amd64 /usr/lib/jvm/java-11-openjdk) ;;
+    redhat) candidates+=(/usr/lib/jvm/java-11-openjdk /usr/lib/jvm/java-11-openjdk-11) ;;
+  esac
+
+  # Include versioned vendor package directories without requiring any one
+  # distro's exact filesystem layout.
+  candidates+=(/usr/lib/jvm/java-11-*)
+
+  for candidate in "${candidates[@]}"; do
+    [[ -x "$candidate/bin/java" && -x "$candidate/bin/javac" ]] || continue
+    java_version="$("$candidate/bin/java" -version 2>&1 | head -n1)"
+    javac_version="$("$candidate/bin/javac" -version 2>&1 | head -n1)"
+    if grep -Eq '"11([."]|$)' <<<"$java_version" && \
+       grep -Eq '(^| )11([. ]|$)' <<<"$javac_version"; then
+      export JAVA_HOME="$candidate"
+      export PATH="$JAVA_HOME/bin:$PATH"
+      log "Using JDK 11 from $JAVA_HOME"
+      return
+    fi
+  done
+
+  die "LineageOS 18.1 requires JDK 11; install the JDK 11 package for this distro (on Arch: jdk11-openjdk)"
+}
+
 install_dependencies() {
   case "$HOST_FAMILY" in
     arch)
@@ -285,6 +325,8 @@ if ((INSTALL_DEPS)); then
   install_dependencies
 fi
 
+select_jdk11
+
 missing_commands=()
 for command_name in \
   awk bash c++ ccache cpio curl git gzip java javac make openssl python3 repo rsync \
@@ -303,10 +345,6 @@ if ! libtinfo_error="$(
   show_libtinfo_help
   echo "Loader error: $libtinfo_error" >&2
   exit 1
-fi
-
-if ! java -version 2>&1 | head -n1 | grep -Eq '"11([.\"]|$)'; then
-  die "LineageOS 18.1 requires JDK 11; install the JDK 11 package for this distro and make it the active java alternative"
 fi
 
 if [[ -n "$PROXY_URL" ]]; then
