@@ -303,31 +303,16 @@ class FrameworkEinkPatcherTest(unittest.TestCase):
             [line.strip() for line in lines],
         )
 
-    def test_navigation_buttons_use_key_button_drawables(self):
+    def test_navigation_buttons_use_explicit_black_key_drawables(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "NavigationBarInflaterView.java"
             source.write_text(NAVIGATION_BAR_INFLATER_SOURCE)
             result = self.run_navigation_refresh_patcher(source)
             self.assertEqual(result.returncode, 0, result.stderr)
             patched = source.read_text()
-            self.assertIn(
-                "import com.android.systemui.statusbar.policy."
-                "KeyButtonDrawable;",
-                patched,
-            )
             self.assertIn("KeyButtonDrawable.create(", patched)
-            self.assertIn("refreshDrawable.setDarkIntensity(1f);", patched)
-            self.assertIn(
-                "((KeyButtonView) v).setImageDrawable(refreshDrawable);",
-                patched,
-            )
-            self.assertIn(
-                "centerDrawable.setDarkIntensity(1f);", patched
-            )
-            self.assertIn(
-                "((KeyButtonView) v).setImageDrawable(centerDrawable);",
-                patched,
-            )
+            self.assertIn("Color.BLACK, Color.BLACK", patched)
+            self.assertNotIn("setDarkIntensity(", patched)
             self.assertIn(
                 "R.string.config_navBarLayoutLeaf3CenterRefresh", patched
             )
@@ -347,6 +332,36 @@ class FrameworkEinkPatcherTest(unittest.TestCase):
                 "getContext().registerReceiver(mLeaf3RefreshReceiver,",
                 patched,
             )
+            refresh_layout = (
+                self.root
+                / "overlay/frameworks/base/packages/SystemUI/res/layout/"
+                "leaf3_refresh.xml"
+            ).read_text()
+            center_layout = (
+                self.root
+                / "overlay/frameworks/base/packages/SystemUI/res/layout/"
+                "leaf3_eink_center.xml"
+            ).read_text()
+            config = (
+                self.root
+                / "overlay/frameworks/base/packages/SystemUI/res/values/"
+                "config.xml"
+            ).read_text()
+            self.assertNotIn("android:src=", refresh_layout)
+            self.assertNotIn("android:src=", center_layout)
+            self.assertIn(
+                "space,space[1W];back,home,recent;leaf3_refresh",
+                config,
+            )
+            self.assertIn(
+                "leaf3_eink_center,space[1W];back,home,recent;space",
+                config,
+            )
+            self.assertIn(
+                "leaf3_eink_center,space[1W];back,home,recent;"
+                "leaf3_refresh",
+                config,
+            )
             self.assertIn(
                 "getContext().unregisterReceiver(mLeaf3RefreshReceiver);",
                 patched,
@@ -363,14 +378,12 @@ class FrameworkEinkPatcherTest(unittest.TestCase):
             / "overlay/frameworks/base/packages/SystemUI/res/layout/"
             "leaf3_refresh.xml"
         ).read_text()
-        self.assertNotIn("android:src=", layout)
         self.assertNotIn("android:tint=", layout)
         center_layout = (
             self.root
             / "overlay/frameworks/base/packages/SystemUI/res/layout/"
             "leaf3_eink_center.xml"
         ).read_text()
-        self.assertNotIn("android:src=", center_layout)
         self.assertNotIn("android:tint=", center_layout)
 
     def test_eink_center_is_a_protected_system_overlay(self):
@@ -444,7 +457,7 @@ class FrameworkEinkPatcherTest(unittest.TestCase):
             self.assertEqual(upgrade.returncode, 0, upgrade.stderr)
             upgraded = source.read_text()
             self.assertIn(module.CREATE_VIEW, upgraded)
-            self.assertIn(module.KEY_BUTTON_DRAWABLE_IMPORT, upgraded)
+            self.assertIn("Color.BLACK, Color.BLACK", upgraded)
             self.assertNotIn(module.PREVIOUS_CREATE_VIEW, upgraded)
             self.assertIn(
                 "import android.content.BroadcastReceiver;", upgraded
@@ -492,6 +505,53 @@ class FrameworkEinkPatcherTest(unittest.TestCase):
             self.assertIn(module.FIELD, upgraded)
             self.assertIn(module.HELPER, upgraded)
             self.assertIn(module.LIFECYCLE, upgraded)
+            self.assertEqual(
+                self.run_navigation_refresh_patcher(
+                    source, "--check"
+                ).returncode,
+                0,
+            )
+
+    def test_navigation_patcher_removes_themed_drawable_assignment(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "NavigationBarInflaterView.java"
+            source.write_text(NAVIGATION_BAR_INFLATER_SOURCE)
+            self.assertEqual(
+                self.run_navigation_refresh_patcher(source).returncode,
+                0,
+            )
+            patcher = importlib.util.spec_from_file_location(
+                "leaf3_themed_navigation_patcher",
+                self.root
+                / "tools/patch-systemui-leaf3-refresh-button.py",
+            )
+            module = importlib.util.module_from_spec(patcher)
+            patcher.loader.exec_module(module)
+            themed = (
+                source.read_text()
+                .replace(module.CREATE_VIEW, module.THEMED_CREATE_VIEW)
+                .replace(
+                    module.CENTER_CREATE_VIEW,
+                    module.THEMED_CENTER_CREATE_VIEW,
+                )
+                .replace(
+                    module.COLOR_IMPORT,
+                    "",
+                )
+            )
+            source.write_text(themed)
+
+            check = self.run_navigation_refresh_patcher(source, "--check")
+            self.assertNotEqual(check.returncode, 0)
+            self.assertIn("outdated", check.stderr)
+
+            upgrade = self.run_navigation_refresh_patcher(source)
+            self.assertEqual(upgrade.returncode, 0, upgrade.stderr)
+            upgraded = source.read_text()
+            self.assertIn(module.CREATE_VIEW, upgraded)
+            self.assertIn(module.CENTER_CREATE_VIEW, upgraded)
+            self.assertIn("Color.BLACK, Color.BLACK", upgraded)
+            self.assertNotIn("setDarkIntensity(", upgraded)
             self.assertEqual(
                 self.run_navigation_refresh_patcher(
                     source, "--check"

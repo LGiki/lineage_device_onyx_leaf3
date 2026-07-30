@@ -1,8 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- The optional Leaf3 refresh key occupies the outer end of the bar. -->
-    <string name="config_navBarLayoutLeaf3Refresh" translatable="false">left[.5W],back[1WC];home;recent[1WC],leaf3_refresh[1WC],right[.5W]</string>
-    <!-- Center stays at the outer start; Refresh stays at the outer end. -->
-    <string name="config_navBarLayoutLeaf3Center" translatable="false">left[.5W],leaf3_eink_center[1WC],back[1WC];home;recent[1WC],right[.5W]</string>
-    <string name="config_navBarLayoutLeaf3CenterRefresh" translatable="false">left[.5W],leaf3_eink_center[1WC],back[1WC];home;recent[1WC],leaf3_refresh[1WC],right[.5W]</string>
+    <!-- Keep the stock keys centered and reserve equal-width outer slots. -->
+    <string name="config_navBarLayoutLeaf3Refresh" translatable="false">space,space[1W];back,home,recent;leaf3_refresh</string>
+    <string name="config_navBarLayoutLeaf3Center" translatable="false">leaf3_eink_center,space[1W];back,home,recent;space</string>
+    <string name="config_navBarLayoutLeaf3CenterRefresh" translatable="false">leaf3_eink_center,space[1W];back,home,recent;leaf3_refresh</string>
 </resources>

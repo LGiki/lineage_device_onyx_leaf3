@@ -16,6 +16,7 @@ BROADCAST_IMPORTS = (
     "import android.content.Intent;\n"
     "import android.content.IntentFilter;\n"
 )
+COLOR_IMPORT = "import android.graphics.Color;\n"
 KEY_BUTTON_DRAWABLE_IMPORT = (
     "import com.android.systemui.statusbar.policy.KeyButtonDrawable;\n"
 )
@@ -233,7 +234,7 @@ PREVIOUS_CREATE_VIEW = (
     "            v.setOnClickListener(view -> SystemProperties.set(LEAF3_FULL_REFRESH,\n"
     "                    Long.toString(SystemClock.elapsedRealtimeNanos())));\n"
 )
-CREATE_VIEW = (
+THEMED_CREATE_VIEW = (
     "        } else if (LEAF3_REFRESH.equals(button)) {\n"
     "            v = inflater.inflate(R.layout.leaf3_refresh, parent, false);\n"
     "            final KeyButtonDrawable refreshDrawable = KeyButtonDrawable.create(\n"
@@ -250,13 +251,75 @@ CREATE_VIEW = (
     "                }\n"
     "            });\n"
 )
-CENTER_CREATE_VIEW = (
+DIRECT_CREATE_VIEW = (
+    "        } else if (LEAF3_REFRESH.equals(button)) {\n"
+    "            v = inflater.inflate(R.layout.leaf3_refresh, parent, false);\n"
+    "            v.setOnClickListener(view -> {\n"
+    "                try {\n"
+    "                    SystemProperties.set(LEAF3_FULL_REFRESH,\n"
+    "                            Long.toString(SystemClock.elapsedRealtimeNanos()));\n"
+    "                } catch (RuntimeException exception) {\n"
+    "                    Log.e(TAG, \"Could not request an E-Ink refresh\", exception);\n"
+    "                }\n"
+    "            });\n"
+)
+CREATE_VIEW = (
+    "        } else if (LEAF3_REFRESH.equals(button)) {\n"
+    "            v = inflater.inflate(R.layout.leaf3_refresh, parent, false);\n"
+    "            final KeyButtonDrawable refreshDrawable = KeyButtonDrawable.create(\n"
+    "                    getContext(), Color.BLACK, Color.BLACK,\n"
+    "                    R.drawable.ic_sysbar_leaf3_refresh,\n"
+    "                    false /* hasShadow */, null /* ovalBackgroundColor */);\n"
+    "            ((KeyButtonView) v).setImageDrawable(refreshDrawable);\n"
+    "            v.setOnClickListener(view -> {\n"
+    "                try {\n"
+    "                    SystemProperties.set(LEAF3_FULL_REFRESH,\n"
+    "                            Long.toString(SystemClock.elapsedRealtimeNanos()));\n"
+    "                } catch (RuntimeException exception) {\n"
+    "                    Log.e(TAG, \"Could not request an E-Ink refresh\", exception);\n"
+    "                }\n"
+    "            });\n"
+)
+THEMED_CENTER_CREATE_VIEW = (
     "        } else if (LEAF3_EINK_CENTER.equals(button)) {\n"
     "            v = inflater.inflate(R.layout.leaf3_eink_center, parent, false);\n"
     "            final KeyButtonDrawable centerDrawable = KeyButtonDrawable.create(\n"
     "                    getContext(), R.drawable.ic_sysbar_leaf3_eink_center,\n"
     "                    false /* hasShadow */);\n"
     "            centerDrawable.setDarkIntensity(1f);\n"
+    "            ((KeyButtonView) v).setImageDrawable(centerDrawable);\n"
+    "            v.setOnClickListener(view -> {\n"
+    "                final Intent intent = new Intent(LEAF3_TOGGLE_EINK_CENTER);\n"
+    "                intent.setClassName(LEAF3_CONTROLS_PACKAGE,\n"
+    "                        LEAF3_EINK_CENTER_SERVICE);\n"
+    "                try {\n"
+    "                    getContext().startService(intent);\n"
+    "                } catch (RuntimeException exception) {\n"
+    "                    Log.e(TAG, \"Could not toggle the E-Ink Center\", exception);\n"
+    "                }\n"
+    "            });\n"
+)
+DIRECT_CENTER_CREATE_VIEW = (
+    "        } else if (LEAF3_EINK_CENTER.equals(button)) {\n"
+    "            v = inflater.inflate(R.layout.leaf3_eink_center, parent, false);\n"
+    "            v.setOnClickListener(view -> {\n"
+    "                final Intent intent = new Intent(LEAF3_TOGGLE_EINK_CENTER);\n"
+    "                intent.setClassName(LEAF3_CONTROLS_PACKAGE,\n"
+    "                        LEAF3_EINK_CENTER_SERVICE);\n"
+    "                try {\n"
+    "                    getContext().startService(intent);\n"
+    "                } catch (RuntimeException exception) {\n"
+    "                    Log.e(TAG, \"Could not toggle the E-Ink Center\", exception);\n"
+    "                }\n"
+    "            });\n"
+)
+CENTER_CREATE_VIEW = (
+    "        } else if (LEAF3_EINK_CENTER.equals(button)) {\n"
+    "            v = inflater.inflate(R.layout.leaf3_eink_center, parent, false);\n"
+    "            final KeyButtonDrawable centerDrawable = KeyButtonDrawable.create(\n"
+    "                    getContext(), Color.BLACK, Color.BLACK,\n"
+    "                    R.drawable.ic_sysbar_leaf3_eink_center,\n"
+    "                    false /* hasShadow */, null /* ovalBackgroundColor */);\n"
     "            ((KeyButtonView) v).setImageDrawable(centerDrawable);\n"
     "            v.setOnClickListener(view -> {\n"
     "                final Intent intent = new Intent(LEAF3_TOGGLE_EINK_CENTER);\n"
@@ -326,10 +389,7 @@ def main() -> int:
             "getContext().unregisterReceiver(mLeaf3RefreshReceiver);",
         )
         create_view_markers = (
-            "import com.android.systemui.statusbar.policy.KeyButtonDrawable;",
-            "KeyButtonDrawable.create(",
-            "refreshDrawable.setDarkIntensity(1f);",
-            "((KeyButtonView) v).setImageDrawable(refreshDrawable);",
+            CREATE_VIEW.strip(),
             "catch (RuntimeException exception)",
             "Could not request an E-Ink refresh",
         )
@@ -394,18 +454,15 @@ def main() -> int:
                 previous = OLD_CREATE_VIEW
             elif PREVIOUS_CREATE_VIEW in text:
                 previous = PREVIOUS_CREATE_VIEW
+            elif THEMED_CREATE_VIEW in text:
+                previous = THEMED_CREATE_VIEW
+            elif DIRECT_CREATE_VIEW in text:
+                previous = DIRECT_CREATE_VIEW
             if previous is not None:
                 text = replace_once(text, previous, CREATE_VIEW, parser)
             elif CREATE_VIEW not in text:
                 parser.error(
                     f"{path}: unrecognized Leaf3 refresh-button click patch"
-                )
-            if KEY_BUTTON_DRAWABLE_IMPORT not in text:
-                text = replace_once(
-                    text,
-                    KEY_BUTTON_VIEW_IMPORT,
-                    KEY_BUTTON_DRAWABLE_IMPORT + KEY_BUTTON_VIEW_IMPORT,
-                    parser,
                 )
             changed = True
 
@@ -445,6 +502,35 @@ def main() -> int:
                 )
             changed = True
 
+        previous_center = None
+        if THEMED_CENTER_CREATE_VIEW in text:
+            previous_center = THEMED_CENTER_CREATE_VIEW
+        elif DIRECT_CENTER_CREATE_VIEW in text:
+            previous_center = DIRECT_CENTER_CREATE_VIEW
+        if previous_center is not None:
+            if args.check:
+                parser.error(
+                    f"{path}: E-Ink Center drawable assignment is outdated"
+                )
+            text = replace_once(
+                text, previous_center, CENTER_CREATE_VIEW, parser
+            )
+            changed = True
+
+        if COLOR_IMPORT not in text:
+            text = replace_once(
+                text, IMPORT_MARKER, COLOR_IMPORT + IMPORT_MARKER, parser
+            )
+            changed = True
+        if KEY_BUTTON_DRAWABLE_IMPORT not in text:
+            text = replace_once(
+                text,
+                KEY_BUTTON_VIEW_IMPORT,
+                KEY_BUTTON_DRAWABLE_IMPORT + KEY_BUTTON_VIEW_IMPORT,
+                parser,
+            )
+            changed = True
+
         if changed:
             path.write_text(text)
         required = (
@@ -454,6 +540,7 @@ def main() -> int:
             ("IntentFilter import", "import android.content.IntentFilter;"),
             ("SystemClock import", "import android.os.SystemClock;"),
             ("SystemProperties import", "import android.os.SystemProperties;"),
+            ("Color import", "import android.graphics.Color;"),
             ("KeyButtonDrawable import",
              "import com.android.systemui.statusbar.policy.KeyButtonDrawable;"),
             ("button token",
@@ -479,8 +566,7 @@ def main() -> int:
              "R.string.config_navBarLayoutLeaf3CenterRefresh"),
             ("button layout", "R.layout.leaf3_refresh"),
             ("center button layout", "R.layout.leaf3_eink_center"),
-            ("key drawable", "KeyButtonDrawable.create("),
-            ("dark icon", "refreshDrawable.setDarkIntensity(1f);"),
+            ("explicit black icon colors", "Color.BLACK, Color.BLACK"),
             ("drawable assignment",
              "((KeyButtonView) v).setImageDrawable(refreshDrawable);"),
             ("refresh property", "SystemProperties.set(LEAF3_FULL_REFRESH,"),
@@ -504,7 +590,8 @@ def main() -> int:
         parser.error(f"{path}: Leaf3 refresh button is not installed")
 
     text = replace_once(text, IMPORT_MARKER,
-                        IMPORT_MARKER + SYSTEM_CLOCK_IMPORT + SYSTEM_PROPERTIES_IMPORT,
+                        COLOR_IMPORT + IMPORT_MARKER + SYSTEM_CLOCK_IMPORT
+                        + SYSTEM_PROPERTIES_IMPORT,
                         parser)
     text = replace_once(
         text,
