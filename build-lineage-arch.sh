@@ -23,7 +23,8 @@ SYNC_RETRIES=3
 
 usage() {
   cat <<'EOF'
-Build the BOOX Leaf3 LineageOS 18.1 first-boot images on Arch Linux.
+Build the BOOX Leaf3 LineageOS 18.1 first-boot images and OTA package on
+Arch Linux.
 
 Usage:
   ./build-lineage-arch.sh --source-dir PATH [options]
@@ -439,6 +440,12 @@ export PATH="$JAVA_HOME/bin:$PATH"
   python3 "$TARGET_DEVICE_DIR/tools/patch-vintf-kernel-matrix.py" \
     "$SOURCE_DIR/$PRODUCT_OUT_REL/system/etc/vintf/compatibility_matrix.5.xml"
   mka -j"$BUILD_JOBS" systemimage vbmetaimage
+
+  # PRODUCT_VIRTUAL_AB_OTA and AB_OTA_PARTITIONS in device.mk make this a
+  # recovery-sideloadable A/B payload.  In particular, do not make a custom
+  # updater ZIP: system, product, and system_ext are sparse logical images
+  # that must be applied by update_engine rather than written with dd.
+  mka -j"$BUILD_JOBS" otapackage
 )
 
 log "Verifying build outputs"
@@ -454,6 +461,23 @@ readonly OUTPUT_FILES=(boot.img dtbo.img system.img product.img system_ext.img v
 for output_file in "${OUTPUT_FILES[@]}"; do
   [[ -s "$PRODUCT_OUT/$output_file" ]] || die "missing build output: $output_file"
 done
+
+# Lineage names OTA packages from the configured version and build date, so
+# discover the package instead of duplicating that naming policy here.
+mapfile -t OTA_CANDIDATES < <(
+  find "$PRODUCT_OUT" -maxdepth 1 -type f -name '*-leaf3.zip' -printf '%T@ %p\n' |
+    sort -nr | awk 'NR == 1 { sub(/^[^ ]+ /, ""); print }'
+)
+[[ ${#OTA_CANDIDATES[@]} -eq 1 && -s "${OTA_CANDIDATES[0]}" ]] || \
+  die "missing OTA package in $PRODUCT_OUT"
+readonly OTA_PACKAGE="${OTA_CANDIDATES[0]}"
+unzip -tqq "$OTA_PACKAGE" || die "OTA package is corrupt: $OTA_PACKAGE"
+unzip -Z1 "$OTA_PACKAGE" | grep -Fxq 'payload.bin' || \
+  die "OTA package is missing payload.bin"
+unzip -Z1 "$OTA_PACKAGE" | grep -Fxq 'payload_properties.txt' || \
+  die "OTA package is missing payload_properties.txt"
+unzip -p "$OTA_PACKAGE" META-INF/com/android/metadata | \
+  grep -Fxq 'ota-type=AB' || die "OTA package is not an A/B OTA"
 [[ -s "$PRODUCT_OUT/system/framework/org.lineageos.platform-res.apk" ]] || \
   die "system is missing org.lineageos.platform-res.apk; the product must inherit the Lineage common configuration"
 [[ -x "$PRODUCT_OUT/system_ext/bin/leaf3_epdc_bridge" ]] || \
@@ -583,9 +607,11 @@ cmp "$VERIFY_RAMDISK_DIR/adb_keys" "$TARGET_DEVICE_DIR/debug-adb-key.pub"
 (
   cd "$PRODUCT_OUT"
   sha256sum "${OUTPUT_FILES[@]}" > lineage-leaf3-images.sha256sum
+  sha256sum "$(basename "$OTA_PACKAGE")" >> lineage-leaf3-images.sha256sum
 )
 
 ccache --show-stats
 log "Build complete"
 echo "Images: $PRODUCT_OUT"
+echo "OTA package: $OTA_PACKAGE"
 echo "Checksums: $PRODUCT_OUT/lineage-leaf3-images.sha256sum"

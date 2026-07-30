@@ -6,8 +6,8 @@ kernel, DTB, DTBO, and e-ink waveform. The stock vendor partition is
 deliberately preserved.
 
 This is an experimental bring-up, not an official LineageOS port. The build
-produces individual first-boot images; it does **not** produce a vendor image
-or an installable OTA ZIP.
+produces individual first-boot images and a recovery-sideloadable A/B OTA ZIP.
+It does **not** produce or replace the stock vendor image.
 
 See the [E-Ink optimization roadmap](ROADMAP.md) for the completed work,
 stability gates, and the ordered plan for porting more stock-ROM behavior.
@@ -81,7 +81,7 @@ The script:
 4. Downloads the checksum-pinned BOOX Page 3.5 OTA with eight resumable aria2
    connections, then extracts only the stock boot, DTBO, and recovery inputs.
 5. Prepares the kernel, DTB, DTBO, and panel waveform.
-6. Builds and verifies the six first-boot images.
+6. Builds and verifies the six first-boot images and the A/B OTA package.
 
 Completed images are placed in:
 
@@ -93,6 +93,7 @@ Completed images are placed in:
 ├── system.img
 ├── system_ext.img
 ├── vbmeta.img
+├── lineage-18.1-*-UNOFFICIAL-leaf3.zip
 └── lineage-leaf3-images.sha256sum
 ```
 
@@ -192,9 +193,28 @@ Install a recent Android platform-tools package on the host:
 sudo pacman -S android-tools
 ```
 
-The build intentionally preserves the stock `vendor` partition and does not
-produce an OTA ZIP. Never flash or erase `vendor`, `super`, `recovery`,
+The build intentionally preserves the stock `vendor` partition. The generated
+OTA ZIP uses Android's A/B `update_engine`; install it through a compatible
+Leaf3/Page TWRP recovery with ADB sideload. Never flash or erase `vendor`, `super`, `recovery`,
 `vbmeta_system`, `persist`, or `onyxconfig` using these instructions.
+
+### Install the OTA ZIP with TWRP
+
+Verify the completed package, boot the confirmed-working Leaf3/Page TWRP, then
+select **Advanced → ADB Sideload** and sideload the ZIP:
+
+```sh
+ROM_DIR=/home/lgiki/leaf3-build/out/target/product/leaf3
+cd "$ROM_DIR"
+sha256sum -c lineage-leaf3-images.sha256sum
+adb sideload lineage-18.1-*-UNOFFICIAL-leaf3.zip
+```
+
+The package updates its inactive A/B slot and leaves the stock vendor image in
+place. It is not compatible with the stock recovery. Do not use TWRP's normal
+"Install ZIP" screen or extract and `dd` its payload; sparse logical
+partitions must be handled by `update_engine`. If sideload fails, keep the
+device in recovery and use the manual fastbootd procedure below instead.
 
 The BOOX bootloader fastboot implementation may reject partition writes.
 The procedure below does not depend on bootloader-fastboot flashing: it uses
