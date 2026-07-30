@@ -17,6 +17,7 @@ HTTP_PROXY_URL=""
 HTTPS_PROXY_URL=""
 NO_PROXY_VALUE=""
 ADB_PUBLIC_KEY=""
+RELEASE_KEYS_DIR=""
 INSTALL_DEPS=0
 SKIP_SYNC=0
 SYNC_RETRIES=3
@@ -35,6 +36,7 @@ Required:
   --adb-public-key PATH   Public key for the computer that will run ADB
 
 Options:
+  --release-keys-dir PATH Re-sign images and OTA with private release keys
   -j, --jobs N            Parallel build jobs (default: all logical CPUs)
   --sync-jobs N           Parallel repo sync jobs (default: 4)
   --sync-retries N        repo sync attempts (default: 3)
@@ -58,7 +60,12 @@ Examples:
   ./build-lineage.sh --source-dir /srv/android/lineage-18.1 \
     --proxy http://127.0.0.1:7890 \
     --adb-public-key /srv/keys/leaf3-adbkey.pub \
+    --release-keys-dir /srv/keys/leaf3-release \
     --sync-jobs 2 -j 12
+
+The release-key directory must contain releasekey, platform, shared, media,
+and networkstack .pk8/.x509.pem pairs. Keep that directory private, secure,
+and outside this repository.
 EOF
 }
 
@@ -273,6 +280,11 @@ while (($#)); do
       ADB_PUBLIC_KEY="$2"
       shift 2
       ;;
+    --release-keys-dir)
+      (($# >= 2)) || die "--release-keys-dir requires a value"
+      RELEASE_KEYS_DIR="$2"
+      shift 2
+      ;;
     --install-deps)
       INSTALL_DEPS=1
       shift
@@ -315,6 +327,19 @@ fi
   die "ADB key file has unexpected content; pass the public adbkey.pub, never the private adbkey"
 grep -Eq '^[A-Za-z0-9+/=]+([[:space:]]+[^[:space:]]+)?[[:space:]]*$' "$ADB_PUBLIC_KEY" || \
   die "invalid ADB public key format: $ADB_PUBLIC_KEY"
+
+if [[ -n "$RELEASE_KEYS_DIR" ]]; then
+  [[ -d "$RELEASE_KEYS_DIR" ]] || \
+    die "release-key directory does not exist: $RELEASE_KEYS_DIR"
+  RELEASE_KEYS_DIR="$(cd -- "$RELEASE_KEYS_DIR" && pwd)"
+  for release_key_name in releasekey platform shared media networkstack; do
+    for release_key_suffix in pk8 x509.pem; do
+      release_key_file="$RELEASE_KEYS_DIR/$release_key_name.$release_key_suffix"
+      [[ -f "$release_key_file" && -r "$release_key_file" ]] || \
+        die "missing readable release-key file: $release_key_file"
+    done
+  done
+fi
 
 [[ "$(uname -s)" == "Linux" ]] || die "this script requires Linux"
 [[ "$(uname -m)" == "x86_64" ]] || die "this script requires an x86_64 host"
@@ -552,11 +577,59 @@ export PATH="$JAVA_HOME/bin:$PATH"
     "$SOURCE_DIR/$PRODUCT_OUT_REL/system/etc/vintf/compatibility_matrix.5.xml"
   mka -j"$BUILD_JOBS" systemimage vbmetaimage
 
-  # PRODUCT_VIRTUAL_AB_OTA and AB_OTA_PARTITIONS in device.mk make this a
-  # recovery-sideloadable A/B payload.  In particular, do not make a custom
-  # updater ZIP: system, product, and system_ext are sparse logical images
-  # that must be applied by update_engine rather than written with dd.
-  mka -j"$BUILD_JOBS" otapackage
+  # Build the target-files archive explicitly, then generate its A/B OTA with
+  # the platform releasetool. Some LineageOS 18.1 trees leave bacon's internal
+  # OTA input unset, which makes its final link step fail after all images have
+  # already built. PRODUCT_VIRTUAL_AB_OTA and AB_OTA_PARTITIONS make this a
+  # recovery-sideloadable update_engine payload; do not create a custom updater
+  # ZIP because its logical-partition images cannot be safely flashed with dd.
+  mka -j"$BUILD_JOBS" target-files-package otatools
+  readonly TARGET_FILES_DIR="$SOURCE_DIR/$PRODUCT_OUT_REL/obj/PACKAGING/target_files_intermediates"
+  mapfile -t TARGET_FILES_CANDIDATES < <(
+    find "$TARGET_FILES_DIR" -maxdepth 1 -type f -name 'lineage_leaf3-target_files-*.zip' -printf '%T@ %p\n' |
+      sort -nr | awk 'NR == 1 { sub(/^[^ ]+ /, ""); print }'
+  )
+  [[ ${#TARGET_FILES_CANDIDATES[@]} -eq 1 && -s "${TARGET_FILES_CANDIDATES[0]}" ]] || \
+    die "missing Leaf3 target-files package in $TARGET_FILES_DIR"
+  readonly OTA_FROM_TARGET_FILES="$SOURCE_DIR/out/host/linux-x86/bin/ota_from_target_files"
+  [[ -x "$OTA_FROM_TARGET_FILES" ]] || die "missing ota_from_target_files; otatools build did not produce it"
+  readonly OTA_OUTPUT="$SOURCE_DIR/$PRODUCT_OUT_REL/lineage-$(get_build_var LINEAGE_VERSION).zip"
+  OTA_TARGET_FILES="${TARGET_FILES_CANDIDATES[0]}"
+  OTA_SIGNING_KEY="$SOURCE_DIR/build/make/target/product/security/testkey"
+  if [[ -n "$RELEASE_KEYS_DIR" ]]; then
+    readonly SIGN_TARGET_FILES_APKS="$SOURCE_DIR/out/host/linux-x86/bin/sign_target_files_apks"
+    [[ -x "$SIGN_TARGET_FILES_APKS" ]] || \
+      die "missing sign_target_files_apks; otatools build did not produce it"
+    readonly SIGNED_TARGET_FILES="$SOURCE_DIR/$PRODUCT_OUT_REL/obj/PACKAGING/lineage_leaf3-signed-target_files.zip"
+    rm -f -- "$SIGNED_TARGET_FILES"
+    "$SIGN_TARGET_FILES_APKS" \
+      -o \
+      --default_key_mappings "$RELEASE_KEYS_DIR" \
+      "$OTA_TARGET_FILES" \
+      "$SIGNED_TARGET_FILES"
+    [[ -s "$SIGNED_TARGET_FILES" ]] || \
+      die "release signing did not produce signed target files"
+    OTA_TARGET_FILES="$SIGNED_TARGET_FILES"
+    OTA_SIGNING_KEY="$RELEASE_KEYS_DIR/releasekey"
+  fi
+  "$OTA_FROM_TARGET_FILES" \
+    -k "$OTA_SIGNING_KEY" \
+    "$OTA_TARGET_FILES" \
+    "$OTA_OUTPUT"
+
+  if [[ -n "$RELEASE_KEYS_DIR" ]]; then
+    # sign_target_files_apks rebuilds the partition images. Export those exact
+    # signed images so manual flashing and the generated OTA use one key set.
+    for signed_image_name in \
+      boot.img dtbo.img system.img product.img system_ext.img vbmeta.img; do
+      signed_image_tmp="$SOURCE_DIR/$PRODUCT_OUT_REL/$signed_image_name.release-signed"
+      unzip -p "$OTA_TARGET_FILES" "IMAGES/$signed_image_name" > "$signed_image_tmp"
+      [[ -s "$signed_image_tmp" ]] || \
+        die "signed target files are missing IMAGES/$signed_image_name"
+      mv -f -- "$signed_image_tmp" \
+        "$SOURCE_DIR/$PRODUCT_OUT_REL/$signed_image_name"
+    done
+  fi
 )
 
 log "Verifying build outputs"

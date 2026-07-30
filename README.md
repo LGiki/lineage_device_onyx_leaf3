@@ -35,6 +35,15 @@ cd lineage_device_onyx_leaf3
 
 Pass the public `adbkey.pub` from the debugging computer; never copy the private ADB key to the build server. Subsequent builds can use `--skip-sync`. Run `./build-lineage.sh --help` for all options, including proxy and download controls.
 
+Development builds use Android's public test keys and LineageOS Trust will
+report that fact. For a privately signed build, generate and securely store the
+standard `releasekey`, `platform`, `shared`, `media`, and `networkstack`
+`.pk8`/`.x509.pem` pairs outside this repository, then pass
+`--release-keys-dir /secure/path/to/keys`. The helper re-signs the target-files
+archive, builds the OTA from it, and exports the matching signed partition
+images. Back up the keys permanently: future OTAs must use the same keys, and
+changing platform keys requires a factory reset.
+
 ## Installation
 
 > [!CAUTION]
