@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ElementTree
 from pathlib import Path
 
 sys.dont_write_bytecode = True
@@ -302,6 +303,19 @@ class FrameworkEinkPatcherTest(unittest.TestCase):
             "persist.sys.leaf3.nav_eink_center_button=0",
             [line.strip() for line in lines],
         )
+
+    def test_wallpaper_service_keeps_launcher_dimension_api_available(self):
+        config_path = (
+            self.root
+            / "overlay/frameworks/base/core/res/res/values/config.xml"
+        )
+        resources = ElementTree.parse(config_path).getroot()
+        booleans = {
+            element.attrib["name"]: element.text
+            for element in resources.findall("bool")
+        }
+        self.assertEqual(booleans["config_wallpaperSupported"], "false")
+        self.assertEqual(booleans["config_enableWallpaperService"], "true")
 
     def test_navigation_buttons_use_explicit_black_key_drawables(self):
         with tempfile.TemporaryDirectory() as temporary:

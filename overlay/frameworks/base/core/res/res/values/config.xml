@@ -6,12 +6,13 @@
     <!-- Leaf3 has no reliable hardware navigation keys. -->
     <bool name="config_showNavigationBar">true</bool>
 
-    <!-- A wallpaper is redrawn behind every launcher change, and a live one
-         redraws continuously. On a 16-level panel that means a dithered
-         grayscale waveform for updates that would otherwise be crisp text.
-         Set this back to true to restore the wallpaper picker. -->
+    <!-- Keep wallpaper content unsupported: redrawing it behind launcher
+         changes produces unnecessary grayscale E-Ink updates. The framework
+         service must still run because Trebuchet calls its dimension APIs;
+         Android 11's DisabledWallpaperManager returns null from those int
+         methods and crashes the launcher while unboxing the result. -->
     <bool name="config_wallpaperSupported">false</bool>
-    <bool name="config_enableWallpaperService">false</bool>
+    <bool name="config_enableWallpaperService">true</bool>
 
     <!-- E-Ink keeps its last image without power, so the bridge clears the
          panel on sleep. Doze and always-on would paint over that. -->
