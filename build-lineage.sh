@@ -20,14 +20,15 @@ ADB_PUBLIC_KEY=""
 INSTALL_DEPS=0
 SKIP_SYNC=0
 SYNC_RETRIES=3
+HOST_FAMILY=""
 
 usage() {
   cat <<'EOF'
 Build the BOOX Leaf3 LineageOS 18.1 first-boot images and OTA package on
-Arch Linux.
+an x86_64 Linux host (Arch, Debian/Ubuntu, or Red Hat-family).
 
 Usage:
-  ./build-lineage-arch.sh --source-dir PATH [options]
+  ./build-lineage.sh --source-dir PATH [options]
 
 Required:
   --source-dir PATH       LineageOS checkout/build directory
@@ -44,7 +45,7 @@ Options:
   --http-proxy URL        HTTP proxy (overrides --proxy for HTTP)
   --https-proxy URL       HTTPS proxy (overrides --proxy for HTTPS)
   --no-proxy LIST         Comma-separated proxy exclusions
-  --install-deps          Install official Arch packages with pacman
+  --install-deps          Install build dependencies for the detected distro
   --skip-sync             Reuse the existing source checkout without repo sync
   -h, --help              Show this help
 
@@ -52,9 +53,9 @@ Proxy values may also be supplied through BUILD_PROXY, http_proxy,
 https_proxy, and no_proxy. CLI options take precedence.
 
 Examples:
-  ./build-lineage-arch.sh --source-dir /srv/android/lineage-18.1 \
+  ./build-lineage.sh --source-dir /srv/android/lineage-18.1 \
     --adb-public-key /srv/keys/leaf3-adbkey.pub
-  ./build-lineage-arch.sh --source-dir /srv/android/lineage-18.1 \
+  ./build-lineage.sh --source-dir /srv/android/lineage-18.1 \
     --proxy http://127.0.0.1:7890 \
     --adb-public-key /srv/keys/leaf3-adbkey.pub \
     --sync-jobs 2 -j 12
@@ -72,6 +73,82 @@ log() {
 
 is_positive_integer() {
   [[ "$1" =~ ^[1-9][0-9]*$ ]]
+}
+
+detect_host_family() {
+  [[ -r /etc/os-release ]] || die "cannot identify the Linux distribution: /etc/os-release is missing"
+
+  # os-release is an operating-system supplied, shell-compatible key/value
+  # file. Use only the fields needed for package-manager selection.
+  local distro_id distro_like
+  distro_id="$(sed -n 's/^ID=//p' /etc/os-release | head -n1 | tr -d '\"')"
+  distro_like="$(sed -n 's/^ID_LIKE=//p' /etc/os-release | head -n1 | tr -d '\"')"
+  case " $distro_id $distro_like " in
+    *" arch "*) HOST_FAMILY="arch" ;;
+    *" debian "*|*" ubuntu "*) HOST_FAMILY="debian" ;;
+    *" rhel "*|*" fedora "*|*" centos "*|*" rocky "*|*" almalinux "*) HOST_FAMILY="redhat" ;;
+    *) die "unsupported Linux distribution (ID=$distro_id, ID_LIKE=$distro_like); supported families are Arch, Debian/Ubuntu, and Red Hat/Fedora" ;;
+  esac
+}
+
+install_dependencies() {
+  case "$HOST_FAMILY" in
+    arch)
+      log "Installing Arch Linux build dependencies"
+      sudo pacman -S --needed \
+        aria2 base-devel bc bison ccache cpio curl e2fsprogs flex git git-lfs \
+        gnupg gperf imagemagick inetutils jdk11-openjdk lib32-gcc-libs \
+        lib32-glibc lib32-ncurses lib32-readline lib32-zlib libelf libxml2 \
+        libxslt lz4 lzop ncurses openssl python python-pip repo rsync schedtool \
+        squashfs-tools unzip which zip
+      ;;
+    debian)
+      log "Installing Debian/Ubuntu build dependencies"
+      sudo apt-get update
+      sudo apt-get install -y \
+        aria2 bc bison build-essential ccache cpio curl e2fsprogs flex \
+        g++-multilib gcc-multilib git git-lfs gnupg gperf imagemagick \
+        lib32ncurses5-dev lib32readline-dev lib32z1-dev libelf-dev liblz4-tool \
+        libxml2-utils libxml2-dev libxslt1-dev lz4 lzop openjdk-11-jdk \
+        openssl python3 python3-pip repo rsync schedtool squashfs-tools unzip \
+        which xsltproc zip zlib1g-dev
+      ;;
+    redhat)
+      local redhat_package_manager
+      if command -v dnf >/dev/null 2>&1; then
+        redhat_package_manager="dnf"
+      elif command -v yum >/dev/null 2>&1; then
+        redhat_package_manager="yum"
+      else
+        die "a dnf- or yum-based Red Hat-family host is required (enable EPEL and the build/development repository as appropriate)"
+      fi
+      log "Installing Red Hat/Fedora build dependencies"
+      sudo "$redhat_package_manager" install -y \
+        aria2 bc bison ccache cpio curl e2fsprogs flex gcc gcc-c++ git git-lfs \
+        gnupg2 gperf ImageMagick inetutils java-11-openjdk-devel \
+        glibc-devel.i686 libgcc.i686 libstdc++-devel.i686 ncurses-devel.i686 \
+        readline-devel.i686 zlib-devel.i686 elfutils-libelf-devel libxml2 \
+        libxml2-devel libxslt libxslt-devel lz4 lzop ncurses-compat-libs \
+        openssl openssl-devel python3 python3-pip repo rsync schedtool \
+        squashfs-tools unzip which zip
+      ;;
+  esac
+}
+
+show_libtinfo_help() {
+  case "$HOST_FAMILY" in
+    arch)
+      echo "Install the 64-bit AUR package ncurses5-compat-libs (not only lib32-ncurses5-compat-libs)." >&2
+      echo "  pacman -Ql ncurses5-compat-libs | grep libtinfo" >&2
+      ;;
+    debian)
+      echo "Install a distribution-provided libtinfo.so.5 compatibility package (commonly libtinfo5 on supported releases)." >&2
+      echo "Recent Debian/Ubuntu releases may no longer ship that ABI; use a supported older build host or container instead of symlinking libtinfo.so.6." >&2
+      ;;
+    redhat)
+      echo "Install the ncurses compatibility libraries (ncurses-compat-libs); some enterprise releases require EPEL or a development repository." >&2
+      ;;
+  esac
 }
 
 validate_webview_apk() {
@@ -201,22 +278,16 @@ grep -Eq '^[A-Za-z0-9+/=]+([[:space:]]+[^[:space:]]+)?[[:space:]]*$' "$ADB_PUBLI
 
 [[ "$(uname -s)" == "Linux" ]] || die "this script requires Linux"
 [[ "$(uname -m)" == "x86_64" ]] || die "this script requires an x86_64 host"
-[[ -r /etc/arch-release ]] || die "this script supports Arch Linux"
+detect_host_family
 ((EUID != 0)) || die "run this script as a normal build user, not as root"
 
 if ((INSTALL_DEPS)); then
-  log "Installing official Arch Linux build dependencies"
-  sudo pacman -S --needed \
-    aria2 base-devel bc bison ccache cpio curl e2fsprogs flex git git-lfs \
-    gnupg gperf imagemagick inetutils jdk11-openjdk lib32-gcc-libs \
-    lib32-glibc lib32-ncurses lib32-readline lib32-zlib libelf libxml2 \
-    libxslt lz4 lzop ncurses openssl python python-pip repo rsync schedtool \
-    squashfs-tools unzip which zip
+  install_dependencies
 fi
 
 missing_commands=()
 for command_name in \
-  awk bash c++ ccache cpio curl git gzip java make openssl python3 repo rsync \
+  awk bash c++ ccache cpio curl git gzip java javac make openssl python3 repo rsync \
   sha256sum unzip xmllint zip; do
   command -v "$command_name" >/dev/null 2>&1 || missing_commands+=("$command_name")
 done
@@ -229,11 +300,13 @@ if ! libtinfo_error="$(
   python3 -c 'import ctypes; ctypes.CDLL("libtinfo.so.5")' 2>&1
 )"; then
   echo "error: the dynamic loader cannot load libtinfo.so.5." >&2
-  echo "Install the 64-bit AUR package ncurses5-compat-libs (not only lib32-ncurses5-compat-libs)." >&2
+  show_libtinfo_help
   echo "Loader error: $libtinfo_error" >&2
-  echo "Installed package files can be checked with:" >&2
-  echo "  pacman -Ql ncurses5-compat-libs | grep libtinfo" >&2
   exit 1
+fi
+
+if ! java -version 2>&1 | head -n1 | grep -Eq '"11([.\"]|$)'; then
+  die "LineageOS 18.1 requires JDK 11; install the JDK 11 package for this distro and make it the active java alternative"
 fi
 
 if [[ -n "$PROXY_URL" ]]; then
@@ -413,13 +486,13 @@ ANDROID_BUILD_TOP="$SOURCE_DIR" \
 log "Configuring ccache"
 mkdir -p "$CCACHE_DIR_PATH"
 export USE_CCACHE=1
-export CCACHE_EXEC=/usr/bin/ccache
+export CCACHE_EXEC="$(command -v ccache)"
 export CCACHE_DIR="$CCACHE_DIR_PATH"
 ccache --max-size="$CCACHE_SIZE"
 
 log "Building Leaf3 first-boot images with ${BUILD_JOBS} jobs"
 cd "$SOURCE_DIR"
-export JAVA_HOME=/usr/lib/jvm/java-11-openjdk
+export JAVA_HOME="$(cd -- "$(dirname -- "$(readlink -f "$(command -v javac)")")/.." && pwd)"
 export PATH="$JAVA_HOME/bin:$PATH"
 (
   # Android's shell helpers are not written for Bash nounset mode.

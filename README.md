@@ -19,19 +19,21 @@ This is an experimental ROM that is suitable for daily use, but it is not an off
 
 ## Build
 
-Build on a current x86_64 Arch Linux host with at least 200 GiB free disk space (250–300 GiB recommended), 32 GiB RAM recommended, multilib enabled, and a non-root user with `sudo` access. The legacy RenderScript tool also needs the AUR package `ncurses5-compat-libs`.
+Build on an x86_64 Arch, Debian/Ubuntu, or Red Hat-family host with at least 200 GiB free disk space (250–300 GiB recommended), 32 GiB RAM recommended, and a non-root user with `sudo` access. `--install-deps` detects the distro from `/etc/os-release` and uses `pacman`, `apt-get`, or `dnf`/`yum` respectively. Arch builders must enable multilib; Red Hat-family builders may need EPEL and their distro's development repository enabled.
+
+LineageOS 18.1 requires JDK 11 and its legacy RenderScript tool needs the `libtinfo.so.5` ABI. On Arch, install the AUR package `ncurses5-compat-libs`; on Debian/Ubuntu, use a release that provides the `libtinfo5` compatibility package; and on Red Hat-family systems install `ncurses-compat-libs`. The script checks both requirements before syncing or building.
 
 ```sh
 git clone https://github.com/LGiki/lineage_device_onyx_leaf3.git
 cd lineage_device_onyx_leaf3
-./build-lineage-arch.sh \
+./build-lineage.sh \
   --source-dir /srv/android/lineage-18.1 \
   --adb-public-key /srv/keys/leaf3-adbkey.pub \
   --install-deps \
   --jobs 12
 ```
 
-Pass the public `adbkey.pub` from the debugging computer; never copy the private ADB key to the build server. Subsequent builds can use `--skip-sync`. Run `./build-lineage-arch.sh --help` for all options, including proxy and download controls.
+Pass the public `adbkey.pub` from the debugging computer; never copy the private ADB key to the build server. Subsequent builds can use `--skip-sync`. Run `./build-lineage.sh --help` for all options, including proxy and download controls.
 
 ## Installation
 

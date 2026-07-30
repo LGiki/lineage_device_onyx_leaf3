@@ -565,7 +565,7 @@ class FrameworkEinkPatcherTest(unittest.TestCase):
             self.root
             / "app/privapp-permissions-org.lineageos.leaf3controls.xml"
         ).read_text()
-        build_script = (self.root / "build-lineage-arch.sh").read_text()
+        build_script = (self.root / "build-lineage.sh").read_text()
         self.assertIn("confirmBackendSwitch(", activity)
         self.assertIn(
             "SystemProperties.set(Leaf3Settings.EPDC_BACKEND, backend)",
