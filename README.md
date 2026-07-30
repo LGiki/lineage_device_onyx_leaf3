@@ -764,6 +764,8 @@ It provides:
 - Quality, Balanced, and Manual ghost-cleanup policies.
 - A one-tap full GC16 screen cleanup.
 - An optional navigation-bar refresh button, disabled by default.
+- An optional navigation-bar E-Ink Center button with a bottom quick-control
+  panel, disabled by default.
 - Refresh-mode and clean-screen Quick Settings tiles.
 - Native bridge counters and timing diagnostics.
 - A confirmed Bridge/Composer backend selector that applies the persistent
@@ -811,6 +813,15 @@ Enable **Navigation-bar refresh button** in the Refresh page to add a fourth,
 dark refresh icon after Recents. Tapping it requests the same full-panel GC16
 cleanup as **Clean screen now** and the Clean screen tile; turn the setting off
 to restore the standard three-button bar immediately.
+
+Enable **Navigation-bar E-Ink Center button** to add a dark control icon before
+Back. It opens a compact panel over the bottom of the current app without
+changing the foreground task. The panel selects a temporary mode for the
+current app or changes the global default, closes and cleans the screen,
+adjusts frontlight brightness and warmth, and opens the full Leaf3 Controls
+app. The Center and refresh buttons are independent; enabling both produces a
+balanced five-button bar. Press Back, tap outside the panel, or turn the screen
+off to close it.
 
 The app is installed in `system_ext.img`. After rebuilding, flash the new
 `system.img`, `system_ext.img`, and matching `vbmeta.img`. Confirm installation

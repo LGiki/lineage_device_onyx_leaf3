@@ -42,12 +42,6 @@ public final class MainActivity extends Activity {
   private static final int PICK_SLEEP_IMAGE = 1001;
   private static final int PANEL_WIDTH = 1264;
   private static final int PANEL_HEIGHT = 1680;
-  private static final String FRONTLIGHT_ENABLED =
-      "persist.sys.leaf3.frontlight_enabled";
-  private static final String FRONTLIGHT_BRIGHTNESS =
-      "persist.sys.leaf3.frontlight_brightness";
-  private static final String FRONTLIGHT_TEMPERATURE =
-      "persist.sys.leaf3.frontlight_temperature";
   private static final long BACKEND_REFRESH_MILLIS = 1000;
 
   private boolean loading = true;
@@ -99,6 +93,8 @@ public final class MainActivity extends Activity {
     final Switch grayscale = findViewById(R.id.grayscale);
     final Switch navigationRefreshButton =
         findViewById(R.id.navigation_refresh_button);
+    final Switch navigationEinkCenterButton =
+        findViewById(R.id.navigation_eink_center_button);
     scrollDetection = findViewById(R.id.scroll_detection);
     final Switch settledQuality = findViewById(R.id.settled_quality);
     final Switch dither = findViewById(R.id.dither);
@@ -131,16 +127,18 @@ public final class MainActivity extends Activity {
         SystemProperties.get(Leaf3Settings.EPDC_BACKEND, "bridge"));
 
     final int storedBrightnessOverride =
-        SystemProperties.getInt(FRONTLIGHT_BRIGHTNESS, -1);
+        SystemProperties.getInt(Leaf3Settings.FRONTLIGHT_BRIGHTNESS, -1);
     final int brightnessOverride =
         storedBrightnessOverride < 0 ? -1 : clamp(storedBrightnessOverride);
     frontlightEnabled.setChecked(
-        SystemProperties.getInt(FRONTLIGHT_ENABLED, 1) != 0);
+        SystemProperties.getInt(Leaf3Settings.FRONTLIGHT_ENABLED, 1) != 0);
     disableAnimations.setChecked(animationsDisabled());
     selectSleepScreen(sleepScreenModes, sleepScreenMode());
     grayscale.setChecked(Leaf3Settings.isGrayscaleEnabled());
     navigationRefreshButton.setChecked(
         SystemProperties.getInt(Leaf3Settings.NAV_REFRESH_BUTTON, 0) != 0);
+    navigationEinkCenterButton.setChecked(
+        SystemProperties.getInt(Leaf3Settings.NAV_EINK_CENTER_BUTTON, 0) != 0);
     scrollDetection.setChecked(
         SystemProperties.getInt(Leaf3Settings.SCROLL_DETECT, 1) != 0);
     settledQuality.setChecked(
@@ -156,7 +154,7 @@ public final class MainActivity extends Activity {
     brightness.setProgress(brightnessOverride < 0 ? 50 : brightnessOverride);
     brightness.setEnabled(brightnessOverride >= 0);
     temperature.setProgress(
-        clamp(SystemProperties.getInt(FRONTLIGHT_TEMPERATURE, 0)));
+        clamp(SystemProperties.getInt(Leaf3Settings.FRONTLIGHT_TEMPERATURE, 0)));
     updateBrightnessLabel();
     updateTemperatureLabel();
     updateContrastLabel(contrast.getProgress() - 50);
@@ -239,6 +237,20 @@ public final class MainActivity extends Activity {
           }
         });
 
+    navigationEinkCenterButton.setOnCheckedChangeListener(
+        new CompoundButton.OnCheckedChangeListener() {
+          @Override
+          public void onCheckedChanged(CompoundButton button, boolean checked) {
+            if (!loading) {
+              setProperty(Leaf3Settings.NAV_EINK_CENTER_BUTTON,
+                          checked ? "1" : "0");
+              sendBroadcast(
+                  new Intent(Leaf3Settings.NAV_EINK_CENTER_BUTTON_CHANGED)
+                      .setPackage("com.android.systemui"));
+            }
+          }
+        });
+
     findViewById(R.id.per_app_profiles)
         .setOnClickListener(view ->
             startActivity(new Intent(this, ProfileActivity.class)));
@@ -259,7 +271,8 @@ public final class MainActivity extends Activity {
           @Override
           public void onCheckedChanged(CompoundButton button, boolean checked) {
             if (!loading) {
-              setProperty(FRONTLIGHT_ENABLED, checked ? "1" : "0");
+              setProperty(Leaf3Settings.FRONTLIGHT_ENABLED,
+                          checked ? "1" : "0");
             }
           }
         });
@@ -385,7 +398,7 @@ public final class MainActivity extends Activity {
           public void onCheckedChanged(CompoundButton button, boolean checked) {
             brightness.setEnabled(!checked);
             if (!loading) {
-              setProperty(FRONTLIGHT_BRIGHTNESS,
+              setProperty(Leaf3Settings.FRONTLIGHT_BRIGHTNESS,
                           checked ? "-1"
                                   : Integer.toString(brightness.getProgress()));
             }
@@ -398,7 +411,8 @@ public final class MainActivity extends Activity {
                                     boolean fromUser) {
         updateBrightnessLabel();
         if (fromUser && !followAndroidBrightness.isChecked()) {
-          setProperty(FRONTLIGHT_BRIGHTNESS, Integer.toString(progress));
+          setProperty(Leaf3Settings.FRONTLIGHT_BRIGHTNESS,
+                      Integer.toString(progress));
         }
       }
     });
@@ -409,7 +423,8 @@ public final class MainActivity extends Activity {
                                     boolean fromUser) {
         updateTemperatureLabel();
         if (fromUser) {
-          setProperty(FRONTLIGHT_TEMPERATURE, Integer.toString(progress));
+          setProperty(Leaf3Settings.FRONTLIGHT_TEMPERATURE,
+                      Integer.toString(progress));
         }
       }
     });

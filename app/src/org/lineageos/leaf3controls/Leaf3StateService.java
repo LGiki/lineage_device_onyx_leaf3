@@ -28,12 +28,11 @@ public final class Leaf3StateService extends Service {
       "org.lineageos.leaf3controls.action.APPLY_SETTINGS";
   public static final String ACTION_TEMPORARY_MODE =
       "org.lineageos.leaf3controls.action.TEMPORARY_MODE";
+  public static final String ACTION_CLEAR_TEMPORARY_MODE =
+      "org.lineageos.leaf3controls.action.CLEAR_TEMPORARY_MODE";
   public static final String EXTRA_REFRESH_MODE = "refresh_mode";
 
   private static final String INTERACTIVE = "sys.leaf3.interactive";
-  private static final String ANDROID_BRIGHTNESS =
-      "sys.leaf3.android_brightness";
-
   private final Handler mainHandler = new Handler(Looper.getMainLooper());
   private final BroadcastReceiver screenReceiver = new BroadcastReceiver() {
     @Override
@@ -89,16 +88,20 @@ public final class Leaf3StateService extends Service {
 
   @Override
   public int onStartCommand(Intent intent, int flags, int startId) {
-    if (intent != null &&
-        ACTION_TEMPORARY_MODE.equals(intent.getAction())) {
-      final String requestedMode =
-          intent.getStringExtra(EXTRA_REFRESH_MODE);
-      if (Leaf3Settings.isRefreshMode(requestedMode)) {
-        updateForegroundPackage();
-        if (!foregroundPackage.isEmpty()) {
-          temporaryPackage = foregroundPackage;
-          temporaryMode = requestedMode;
+    if (intent != null) {
+      if (ACTION_TEMPORARY_MODE.equals(intent.getAction())) {
+        final String requestedMode =
+            intent.getStringExtra(EXTRA_REFRESH_MODE);
+        if (Leaf3Settings.isRefreshMode(requestedMode)) {
+          updateForegroundPackage();
+          if (!foregroundPackage.isEmpty()) {
+            temporaryPackage = foregroundPackage;
+            temporaryMode = requestedMode;
+          }
         }
+      } else if (ACTION_CLEAR_TEMPORARY_MODE.equals(intent.getAction())) {
+        temporaryPackage = "";
+        temporaryMode = "";
       }
     }
     publishState();
@@ -172,7 +175,7 @@ public final class Leaf3StateService extends Service {
         Settings.System.getInt(getContentResolver(),
                                Settings.System.SCREEN_BRIGHTNESS, 128);
     SystemProperties.set(
-        ANDROID_BRIGHTNESS,
+        Leaf3Settings.ANDROID_BRIGHTNESS,
         Integer.toString(Math.max(0, Math.min(255, brightness))));
   }
 

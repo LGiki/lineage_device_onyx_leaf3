@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="accessibility_leaf3_refresh">Refresh E-Ink screen</string>
+    <string name="accessibility_leaf3_eink_center">Open E-Ink Center</string>
 </resources>

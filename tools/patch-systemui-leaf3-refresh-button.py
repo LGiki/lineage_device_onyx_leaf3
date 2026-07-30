@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Add Leaf3's optional full-refresh key to Android 11's navigation bar."""
+"""Add Leaf3's optional E-Ink Center and refresh navigation keys."""
 
 import argparse
 from pathlib import Path
@@ -39,11 +39,22 @@ CREATE_VIEW_MARKER = (
 CONSTANTS = (
     "\n"
     "    public static final String LEAF3_REFRESH = \"leaf3_refresh\";\n"
+    "    public static final String LEAF3_EINK_CENTER = \"leaf3_eink_center\";\n"
     "    private static final String LEAF3_NAV_REFRESH_BUTTON =\n"
     "            \"persist.sys.leaf3.nav_refresh_button\";\n"
+    "    private static final String LEAF3_NAV_EINK_CENTER_BUTTON =\n"
+    "            \"persist.sys.leaf3.nav_eink_center_button\";\n"
     "    private static final String LEAF3_FULL_REFRESH = \"sys.leaf3.full_refresh\";\n"
     "    private static final String LEAF3_NAV_REFRESH_CHANGED =\n"
     "            \"org.lineageos.leaf3controls.action.NAV_REFRESH_BUTTON_CHANGED\";\n"
+    "    private static final String LEAF3_NAV_EINK_CENTER_CHANGED =\n"
+    "            \"org.lineageos.leaf3controls.action.NAV_EINK_CENTER_BUTTON_CHANGED\";\n"
+    "    private static final String LEAF3_TOGGLE_EINK_CENTER =\n"
+    "            \"org.lineageos.leaf3controls.action.TOGGLE_EINK_CENTER\";\n"
+    "    private static final String LEAF3_CONTROLS_PACKAGE =\n"
+    "            \"org.lineageos.leaf3controls\";\n"
+    "    private static final String LEAF3_EINK_CENTER_SERVICE =\n"
+    "            \"org.lineageos.leaf3controls.EinkCenterService\";\n"
 )
 OLD_CONSTANT_END = (
     "    private static final String LEAF3_FULL_REFRESH = \"sys.leaf3.full_refresh\";\n"
@@ -52,7 +63,27 @@ ACTION_CONSTANT = (
     "    private static final String LEAF3_NAV_REFRESH_CHANGED =\n"
     "            \"org.lineageos.leaf3controls.action.NAV_REFRESH_BUTTON_CHANGED\";\n"
 )
+PRE_CENTER_CONSTANTS = (
+    "\n"
+    "    public static final String LEAF3_REFRESH = \"leaf3_refresh\";\n"
+    "    private static final String LEAF3_NAV_REFRESH_BUTTON =\n"
+    "            \"persist.sys.leaf3.nav_refresh_button\";\n"
+    "    private static final String LEAF3_FULL_REFRESH = \"sys.leaf3.full_refresh\";\n"
+    "    private static final String LEAF3_NAV_REFRESH_CHANGED =\n"
+    "            \"org.lineageos.leaf3controls.action.NAV_REFRESH_BUTTON_CHANGED\";\n"
+)
 FIELD = (
+    "    private boolean mLeaf3RefreshButtonEnabled;\n"
+    "    private boolean mLeaf3EinkCenterButtonEnabled;\n"
+    "    private boolean mLeaf3RefreshReceiverRegistered;\n"
+    "    private final BroadcastReceiver mLeaf3RefreshReceiver = new BroadcastReceiver() {\n"
+    "        @Override\n"
+    "        public void onReceive(Context context, Intent intent) {\n"
+    "            updateLeaf3NavigationButtons();\n"
+    "        }\n"
+    "    };\n"
+)
+PRE_CENTER_FIELD = (
     "    private boolean mLeaf3RefreshButtonEnabled;\n"
     "    private boolean mLeaf3RefreshReceiverRegistered;\n"
     "    private final BroadcastReceiver mLeaf3RefreshReceiver = new BroadcastReceiver() {\n"
@@ -64,6 +95,10 @@ FIELD = (
 )
 OLD_FIELD = "    private boolean mLeaf3RefreshButtonEnabled;\n"
 CONSTRUCTOR = (
+    "        mLeaf3RefreshButtonEnabled = leaf3RefreshButtonEnabled();\n"
+    "        mLeaf3EinkCenterButtonEnabled = leaf3EinkCenterButtonEnabled();\n"
+)
+PRE_CENTER_CONSTRUCTOR = (
     "        mLeaf3RefreshButtonEnabled = leaf3RefreshButtonEnabled();\n"
 )
 OLD_CONSTRUCTOR = (
@@ -78,6 +113,21 @@ OLD_CONSTRUCTOR = (
 )
 DEFAULT_LAYOUT = (
     "    protected String getDefaultLayout() {\n"
+    "        if (!QuickStepContract.isGesturalMode(mNavBarMode)) {\n"
+    "            if (mLeaf3EinkCenterButtonEnabled && mLeaf3RefreshButtonEnabled) {\n"
+    "                return getContext().getString(R.string.config_navBarLayoutLeaf3CenterRefresh);\n"
+    "            }\n"
+    "            if (mLeaf3EinkCenterButtonEnabled) {\n"
+    "                return getContext().getString(R.string.config_navBarLayoutLeaf3Center);\n"
+    "            }\n"
+    "            if (mLeaf3RefreshButtonEnabled) {\n"
+    "                return getContext().getString(R.string.config_navBarLayoutLeaf3Refresh);\n"
+    "            }\n"
+    "        }\n"
+    "        final int defaultResource = QuickStepContract.isGesturalMode(mNavBarMode)\n"
+)
+PRE_CENTER_DEFAULT_LAYOUT = (
+    "    protected String getDefaultLayout() {\n"
     "        if (!QuickStepContract.isGesturalMode(mNavBarMode)\n"
     "                && mLeaf3RefreshButtonEnabled) {\n"
     "            return getContext().getString(R.string.config_navBarLayoutLeaf3Refresh);\n"
@@ -85,6 +135,27 @@ DEFAULT_LAYOUT = (
     "        final int defaultResource = QuickStepContract.isGesturalMode(mNavBarMode)\n"
 )
 HELPER = (
+    "\n"
+    "    private boolean leaf3RefreshButtonEnabled() {\n"
+    "        return SystemProperties.getInt(LEAF3_NAV_REFRESH_BUTTON, 0) != 0;\n"
+    "    }\n"
+    "\n"
+    "    private boolean leaf3EinkCenterButtonEnabled() {\n"
+    "        return SystemProperties.getInt(LEAF3_NAV_EINK_CENTER_BUTTON, 0) != 0;\n"
+    "    }\n"
+    "\n"
+    "    private void updateLeaf3NavigationButtons() {\n"
+    "        final boolean refreshEnabled = leaf3RefreshButtonEnabled();\n"
+    "        final boolean centerEnabled = leaf3EinkCenterButtonEnabled();\n"
+    "        if (refreshEnabled != mLeaf3RefreshButtonEnabled\n"
+    "                || centerEnabled != mLeaf3EinkCenterButtonEnabled) {\n"
+    "            mLeaf3RefreshButtonEnabled = refreshEnabled;\n"
+    "            mLeaf3EinkCenterButtonEnabled = centerEnabled;\n"
+    "            onLikelyDefaultLayoutChange();\n"
+    "        }\n"
+    "    }\n"
+)
+PRE_CENTER_HELPER = (
     "\n"
     "    private boolean leaf3RefreshButtonEnabled() {\n"
     "        return SystemProperties.getInt(LEAF3_NAV_REFRESH_BUTTON, 0) != 0;\n"
@@ -114,6 +185,17 @@ ATTACH_MARKER = (
 )
 ATTACH_SUPER_MARKER = "        super.onAttachedToWindow();\n"
 REGISTER_RECEIVER = (
+    "        if (!mLeaf3RefreshReceiverRegistered) {\n"
+    "            final IntentFilter leaf3NavigationFilter =\n"
+    "                    new IntentFilter(LEAF3_NAV_REFRESH_CHANGED);\n"
+    "            leaf3NavigationFilter.addAction(LEAF3_NAV_EINK_CENTER_CHANGED);\n"
+    "            getContext().registerReceiver(mLeaf3RefreshReceiver,\n"
+    "                    leaf3NavigationFilter);\n"
+    "            mLeaf3RefreshReceiverRegistered = true;\n"
+    "        }\n"
+    "        updateLeaf3NavigationButtons();\n"
+)
+PRE_CENTER_REGISTER_RECEIVER = (
     "        if (!mLeaf3RefreshReceiverRegistered) {\n"
     "            getContext().registerReceiver(mLeaf3RefreshReceiver,\n"
     "                    new IntentFilter(LEAF3_NAV_REFRESH_CHANGED));\n"
@@ -165,6 +247,25 @@ CREATE_VIEW = (
     "                            Long.toString(SystemClock.elapsedRealtimeNanos()));\n"
     "                } catch (RuntimeException exception) {\n"
     "                    Log.e(TAG, \"Could not request an E-Ink refresh\", exception);\n"
+    "                }\n"
+    "            });\n"
+)
+CENTER_CREATE_VIEW = (
+    "        } else if (LEAF3_EINK_CENTER.equals(button)) {\n"
+    "            v = inflater.inflate(R.layout.leaf3_eink_center, parent, false);\n"
+    "            final KeyButtonDrawable centerDrawable = KeyButtonDrawable.create(\n"
+    "                    getContext(), R.drawable.ic_sysbar_leaf3_eink_center,\n"
+    "                    false /* hasShadow */);\n"
+    "            centerDrawable.setDarkIntensity(1f);\n"
+    "            ((KeyButtonView) v).setImageDrawable(centerDrawable);\n"
+    "            v.setOnClickListener(view -> {\n"
+    "                final Intent intent = new Intent(LEAF3_TOGGLE_EINK_CENTER);\n"
+    "                intent.setClassName(LEAF3_CONTROLS_PACKAGE,\n"
+    "                        LEAF3_EINK_CENTER_SERVICE);\n"
+    "                try {\n"
+    "                    getContext().startService(intent);\n"
+    "                } catch (RuntimeException exception) {\n"
+    "                    Log.e(TAG, \"Could not toggle the E-Ink Center\", exception);\n"
     "                }\n"
     "            });\n"
 )
@@ -220,7 +321,6 @@ def main() -> int:
             ACTION_CONSTANT.strip(),
             "private boolean mLeaf3RefreshReceiverRegistered;",
             "private final BroadcastReceiver mLeaf3RefreshReceiver",
-            "private void updateLeaf3RefreshButton()",
             "protected void onAttachedToWindow()",
             "getContext().registerReceiver(mLeaf3RefreshReceiver,",
             "getContext().unregisterReceiver(mLeaf3RefreshReceiver);",
@@ -238,8 +338,13 @@ def main() -> int:
         )
         outdated = (
             any(marker not in text for marker in notification_markers)
+            or (
+                "private void updateLeaf3RefreshButton()" not in text
+                and "private void updateLeaf3NavigationButtons()" not in text
+            )
             or OLD_CONSTRUCTOR in text
         )
+        changed = False
         if outdated:
             if args.check:
                 parser.error(
@@ -270,11 +375,15 @@ def main() -> int:
                 text = replace_once(
                     text, OLD_CONSTRUCTOR, CONSTRUCTOR, parser
                 )
-            if "private void updateLeaf3RefreshButton()" not in text:
+            if (
+                "private void updateLeaf3RefreshButton()" not in text
+                and "private void updateLeaf3NavigationButtons()" not in text
+            ):
                 text = replace_once(
                     text, OLD_HELPER, HELPER, parser
                 )
             text = install_lifecycle(text, parser)
+            changed = True
         if create_view_outdated:
             if args.check:
                 parser.error(
@@ -298,7 +407,45 @@ def main() -> int:
                     KEY_BUTTON_DRAWABLE_IMPORT + KEY_BUTTON_VIEW_IMPORT,
                     parser,
                 )
-        if outdated or create_view_outdated:
+            changed = True
+
+        if "LEAF3_NAV_EINK_CENTER_BUTTON" not in text:
+            if args.check:
+                parser.error(
+                    f"{path}: E-Ink Center navigation patch is not installed"
+                )
+            text = replace_once(
+                text, PRE_CENTER_CONSTANTS, CONSTANTS, parser
+            )
+            if PRE_CENTER_FIELD in text:
+                text = replace_once(
+                    text, PRE_CENTER_FIELD, FIELD, parser
+                )
+            if PRE_CENTER_CONSTRUCTOR in text:
+                text = replace_once(
+                    text, PRE_CENTER_CONSTRUCTOR, CONSTRUCTOR, parser
+                )
+            text = replace_once(
+                text, PRE_CENTER_DEFAULT_LAYOUT, DEFAULT_LAYOUT, parser
+            )
+            if PRE_CENTER_HELPER in text:
+                text = replace_once(
+                    text, PRE_CENTER_HELPER, HELPER, parser
+                )
+            if PRE_CENTER_REGISTER_RECEIVER in text:
+                text = replace_once(
+                    text,
+                    PRE_CENTER_REGISTER_RECEIVER,
+                    REGISTER_RECEIVER,
+                    parser,
+                )
+            if CENTER_CREATE_VIEW not in text:
+                text = replace_once(
+                    text, CREATE_VIEW, CREATE_VIEW + CENTER_CREATE_VIEW, parser
+                )
+            changed = True
+
+        if changed:
             path.write_text(text)
         required = (
             ("BroadcastReceiver import",
@@ -311,7 +458,12 @@ def main() -> int:
              "import com.android.systemui.statusbar.policy.KeyButtonDrawable;"),
             ("button token",
              "public static final String LEAF3_REFRESH = \"leaf3_refresh\";"),
+            ("center token",
+             "public static final String LEAF3_EINK_CENTER = "
+             "\"leaf3_eink_center\";"),
             ("enabled field", "private boolean mLeaf3RefreshButtonEnabled;"),
+            ("center enabled field",
+             "private boolean mLeaf3EinkCenterButtonEnabled;"),
             ("receiver field",
              "private boolean mLeaf3RefreshReceiverRegistered;"),
             ("change action", "LEAF3_NAV_REFRESH_CHANGED"),
@@ -319,9 +471,14 @@ def main() -> int:
              "getContext().registerReceiver(mLeaf3RefreshReceiver,"),
             ("receiver cleanup",
              "getContext().unregisterReceiver(mLeaf3RefreshReceiver);"),
-            ("update helper", "private void updateLeaf3RefreshButton()"),
+            ("update helper",
+             "private void updateLeaf3NavigationButtons()"),
             ("custom layout", "R.string.config_navBarLayoutLeaf3Refresh"),
+            ("center layout", "R.string.config_navBarLayoutLeaf3Center"),
+            ("combined layout",
+             "R.string.config_navBarLayoutLeaf3CenterRefresh"),
             ("button layout", "R.layout.leaf3_refresh"),
+            ("center button layout", "R.layout.leaf3_eink_center"),
             ("key drawable", "KeyButtonDrawable.create("),
             ("dark icon", "refreshDrawable.setDarkIntensity(1f);"),
             ("drawable assignment",
@@ -329,14 +486,18 @@ def main() -> int:
             ("refresh property", "SystemProperties.set(LEAF3_FULL_REFRESH,"),
             ("click failure guard", "catch (RuntimeException exception)"),
             ("click error log", "Could not request an E-Ink refresh"),
+            ("center service action", "LEAF3_TOGGLE_EINK_CENTER"),
+            ("center explicit service", "intent.setClassName("),
+            ("center service start", "getContext().startService(intent);"),
+            ("center error log", "Could not toggle the E-Ink Center"),
         )
         missing = [name for name, marker in required if marker not in text]
         if missing:
             parser.error(
-                f"{path}: incomplete Leaf3 refresh-button patch; missing: "
+                f"{path}: incomplete Leaf3 navigation-button patch; missing: "
                 + ", ".join(missing)
             )
-        print(f"{path}: Leaf3 refresh button is installed")
+        print(f"{path}: Leaf3 navigation buttons are installed")
         return 0
 
     if args.check:
@@ -369,9 +530,14 @@ def main() -> int:
                         HELPER + "\n    @Override\n    public void onNavigationModeChanged(int mode) {\n",
                         parser)
     text = install_lifecycle(text, parser)
-    text = replace_once(text, CREATE_VIEW_MARKER, CREATE_VIEW_MARKER + CREATE_VIEW, parser)
+    text = replace_once(
+        text,
+        CREATE_VIEW_MARKER,
+        CREATE_VIEW_MARKER + CREATE_VIEW + CENTER_CREATE_VIEW,
+        parser,
+    )
     path.write_text(text)
-    print(f"{path}: installed Leaf3 refresh button")
+    print(f"{path}: installed Leaf3 navigation buttons")
     return 0
 
 

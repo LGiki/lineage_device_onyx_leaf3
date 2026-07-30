@@ -19,6 +19,7 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REBOOT" />
     <uses-permission android:name="android.permission.CONTROL_DISPLAY_COLOR_TRANSFORMS" />
+    <uses-permission android:name="android.permission.INTERNAL_SYSTEM_WINDOW" />
 
     <application
         android:allowBackup="false"
@@ -43,6 +44,12 @@
             android:name=".Leaf3StateService"
             android:directBootAware="true"
             android:exported="false" />
+
+        <service
+            android:name=".EinkCenterService"
+            android:directBootAware="true"
+            android:exported="true"
+            android:permission="android.permission.STATUS_BAR_SERVICE" />
 
         <service
             android:name=".RefreshModeTileService"

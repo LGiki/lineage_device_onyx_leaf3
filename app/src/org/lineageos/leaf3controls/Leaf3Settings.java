@@ -34,6 +34,20 @@ final class Leaf3Settings {
       "persist.sys.leaf3.nav_refresh_button";
   static final String NAV_REFRESH_BUTTON_CHANGED =
       "org.lineageos.leaf3controls.action.NAV_REFRESH_BUTTON_CHANGED";
+  static final String NAV_EINK_CENTER_BUTTON =
+      "persist.sys.leaf3.nav_eink_center_button";
+  static final String NAV_EINK_CENTER_BUTTON_CHANGED =
+      "org.lineageos.leaf3controls.action.NAV_EINK_CENTER_BUTTON_CHANGED";
+  static final String TOGGLE_EINK_CENTER =
+      "org.lineageos.leaf3controls.action.TOGGLE_EINK_CENTER";
+  static final String FRONTLIGHT_ENABLED =
+      "persist.sys.leaf3.frontlight_enabled";
+  static final String FRONTLIGHT_BRIGHTNESS =
+      "persist.sys.leaf3.frontlight_brightness";
+  static final String FRONTLIGHT_TEMPERATURE =
+      "persist.sys.leaf3.frontlight_temperature";
+  static final String ANDROID_BRIGHTNESS =
+      "sys.leaf3.android_brightness";
   static final String IDLE_POLICY = "persist.sys.leaf3.idle_policy";
   static final String CLEANUP_POLICY = "persist.sys.leaf3.cleanup_policy";
   static final String SCROLL_DETECT = "persist.sys.leaf3.scroll_detect";

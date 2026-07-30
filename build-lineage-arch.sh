@@ -350,7 +350,7 @@ readonly LIGHT_BAR_CONTROLLER_SOURCE="$SOURCE_DIR/frameworks/base/packages/Syste
 python3 "$TARGET_DEVICE_DIR/tools/patch-systemui-dark-navigation-icons.py" \
   "$LIGHT_BAR_CONTROLLER_SOURCE"
 
-log "Adding the optional Leaf3 E-Ink refresh navigation button"
+log "Adding the optional Leaf3 E-Ink navigation buttons"
 readonly NAVIGATION_BAR_INFLATER_SOURCE="$SOURCE_DIR/frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/phone/NavigationBarInflaterView.java"
 [[ -f "$NAVIGATION_BAR_INFLATER_SOURCE" ]] || \
   die "missing SystemUI NavigationBarInflaterView source: $NAVIGATION_BAR_INFLATER_SOURCE"
@@ -508,6 +508,9 @@ grep -Fxq 'persist.sys.leaf3.epdc_backend=bridge' \
 grep -Fxq 'persist.sys.leaf3.nav_refresh_button=0' \
   "$PRODUCT_OUT/system/etc/prop.default" || \
   die "build did not default the Leaf3 navigation refresh button to disabled"
+grep -Fxq 'persist.sys.leaf3.nav_eink_center_button=0' \
+  "$PRODUCT_OUT/system/etc/prop.default" || \
+  die "build did not default the Leaf3 E-Ink Center button to disabled"
 [[ -s "$PRODUCT_OUT/system_ext/etc/selinux/system_ext_sepolicy.cil" ]] || \
   die "system_ext is missing its SELinux policy"
 grep -Fq 'leaf3_epdc_bridge' \

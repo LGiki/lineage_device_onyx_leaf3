@@ -285,21 +285,25 @@ class FrameworkEinkPatcherTest(unittest.TestCase):
         self.assertIn("data_file_type", declaration.group(1))
         self.assertIn("core_data_file_type", declaration.group(1))
 
-    def test_navigation_refresh_default_continues_property_list(self):
+    def test_navigation_button_defaults_continue_property_list(self):
         lines = (self.root / "device.mk").read_text().splitlines()
         property_line = "persist.sys.leaf3.nav_refresh_button=0"
         index = next(
             position
             for position, line in enumerate(lines)
-            if line.strip() == property_line
+            if line.strip().rstrip("\\").rstrip() == property_line
         )
         self.assertGreater(index, 0)
         self.assertTrue(
             lines[index - 1].rstrip().endswith("\\"),
             f"{property_line} is not part of the preceding property list",
         )
+        self.assertIn(
+            "persist.sys.leaf3.nav_eink_center_button=0",
+            [line.strip() for line in lines],
+        )
 
-    def test_navigation_refresh_uses_key_button_drawable(self):
+    def test_navigation_buttons_use_key_button_drawables(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "NavigationBarInflaterView.java"
             source.write_text(NAVIGATION_BAR_INFLATER_SOURCE)
@@ -316,6 +320,24 @@ class FrameworkEinkPatcherTest(unittest.TestCase):
             self.assertIn(
                 "((KeyButtonView) v).setImageDrawable(refreshDrawable);",
                 patched,
+            )
+            self.assertIn(
+                "centerDrawable.setDarkIntensity(1f);", patched
+            )
+            self.assertIn(
+                "((KeyButtonView) v).setImageDrawable(centerDrawable);",
+                patched,
+            )
+            self.assertIn(
+                "R.string.config_navBarLayoutLeaf3CenterRefresh", patched
+            )
+            self.assertIn(
+                "leaf3NavigationFilter.addAction("
+                "LEAF3_NAV_EINK_CENTER_CHANGED);",
+                patched,
+            )
+            self.assertIn(
+                "getContext().startService(intent);", patched
             )
             self.assertIn("catch (RuntimeException exception)", patched)
             self.assertIn(
@@ -343,6 +365,47 @@ class FrameworkEinkPatcherTest(unittest.TestCase):
         ).read_text()
         self.assertNotIn("android:src=", layout)
         self.assertNotIn("android:tint=", layout)
+        center_layout = (
+            self.root
+            / "overlay/frameworks/base/packages/SystemUI/res/layout/"
+            "leaf3_eink_center.xml"
+        ).read_text()
+        self.assertNotIn("android:src=", center_layout)
+        self.assertNotIn("android:tint=", center_layout)
+
+    def test_eink_center_is_a_protected_system_overlay(self):
+        service = (
+            self.root
+            / "app/src/org/lineageos/leaf3controls/"
+            "EinkCenterService.java"
+        ).read_text()
+        manifest = (self.root / "app/AndroidManifest.xml").read_text()
+        activity = (
+            self.root
+            / "app/src/org/lineageos/leaf3controls/MainActivity.java"
+        ).read_text()
+        state_service = (
+            self.root
+            / "app/src/org/lineageos/leaf3controls/"
+            "Leaf3StateService.java"
+        ).read_text()
+        self.assertIn("TYPE_STATUS_BAR_SUB_PANEL", service)
+        self.assertIn("params.token = WINDOW_TOKEN", service)
+        self.assertIn("FLAG_WATCH_OUTSIDE_TOUCH", service)
+        self.assertIn("ACTION_CLEAR_TEMPORARY_MODE", service)
+        self.assertIn("Leaf3Settings.GLOBAL_REFRESH_MODE", service)
+        self.assertIn("CLEAN_DELAY_MILLIS", service)
+        self.assertIn("android.permission.INTERNAL_SYSTEM_WINDOW", manifest)
+        self.assertRegex(
+            manifest,
+            r'android:name="\.EinkCenterService"[^>]+'
+            r'android:exported="true"[^>]+'
+            r'android:permission="android.permission.STATUS_BAR_SERVICE"',
+        )
+        self.assertIn(
+            "Leaf3Settings.NAV_EINK_CENTER_BUTTON_CHANGED", activity
+        )
+        self.assertIn("ACTION_CLEAR_TEMPORARY_MODE", state_service)
 
     def test_navigation_refresh_upgrades_unsafe_vector_patch(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -429,6 +492,61 @@ class FrameworkEinkPatcherTest(unittest.TestCase):
             self.assertIn(module.FIELD, upgraded)
             self.assertIn(module.HELPER, upgraded)
             self.assertIn(module.LIFECYCLE, upgraded)
+            self.assertEqual(
+                self.run_navigation_refresh_patcher(
+                    source, "--check"
+                ).returncode,
+                0,
+            )
+
+    def test_navigation_patcher_upgrades_refresh_only_installation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "NavigationBarInflaterView.java"
+            source.write_text(NAVIGATION_BAR_INFLATER_SOURCE)
+            self.assertEqual(
+                self.run_navigation_refresh_patcher(source).returncode,
+                0,
+            )
+            patcher = importlib.util.spec_from_file_location(
+                "leaf3_navigation_center_upgrade_patcher",
+                self.root
+                / "tools/patch-systemui-leaf3-refresh-button.py",
+            )
+            module = importlib.util.module_from_spec(patcher)
+            patcher.loader.exec_module(module)
+            refresh_only = (
+                source.read_text()
+                .replace(module.CONSTANTS, module.PRE_CENTER_CONSTANTS)
+                .replace(module.FIELD, module.PRE_CENTER_FIELD)
+                .replace(
+                    module.CONSTRUCTOR, module.PRE_CENTER_CONSTRUCTOR
+                )
+                .replace(
+                    module.DEFAULT_LAYOUT,
+                    module.PRE_CENTER_DEFAULT_LAYOUT,
+                )
+                .replace(module.HELPER, module.PRE_CENTER_HELPER)
+                .replace(
+                    module.REGISTER_RECEIVER,
+                    module.PRE_CENTER_REGISTER_RECEIVER,
+                )
+                .replace(module.CENTER_CREATE_VIEW, "")
+            )
+            source.write_text(refresh_only)
+
+            check = self.run_navigation_refresh_patcher(source, "--check")
+            self.assertNotEqual(check.returncode, 0)
+            self.assertIn("E-Ink Center", check.stderr)
+
+            upgrade = self.run_navigation_refresh_patcher(source)
+            self.assertEqual(upgrade.returncode, 0, upgrade.stderr)
+            upgraded = source.read_text()
+            self.assertIn(module.CONSTANTS, upgraded)
+            self.assertIn(module.FIELD, upgraded)
+            self.assertIn(module.DEFAULT_LAYOUT, upgraded)
+            self.assertIn(module.HELPER, upgraded)
+            self.assertIn(module.REGISTER_RECEIVER, upgraded)
+            self.assertIn(module.CENTER_CREATE_VIEW, upgraded)
             self.assertEqual(
                 self.run_navigation_refresh_patcher(
                     source, "--check"

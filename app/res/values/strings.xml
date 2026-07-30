@@ -23,6 +23,15 @@
     <string name="reader_explanation"><b>Reader — Fast page turns</b>\nUses DU for pages and performs GC16 only at the selected page interval.</string>
     <string name="full_refresh">Clean screen now</string>
     <string name="navigation_refresh_button">Navigation-bar refresh button</string>
+    <string name="navigation_eink_center_button">Navigation-bar E-Ink Center button</string>
+    <string name="eink_center">E-Ink Center</string>
+    <string name="close">Close</string>
+    <string name="current_app">Current app</string>
+    <string name="global_default">Global default</string>
+    <string name="global_default_hint">Per-app profiles still take precedence over the global default.</string>
+    <string name="follow_android_brightness_short">Follow Android brightness</string>
+    <string name="more_settings">More settings</string>
+    <string name="eink_center_error">Could not open the E-Ink Center.</string>
     <string name="per_app_profiles">Per-app refresh profiles</string>
     <string name="per_app_profiles_short">App profiles</string>
     <string name="mode_specifications">Refresh mode specifications</string>

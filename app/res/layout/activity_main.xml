@@ -155,6 +155,11 @@
                 style="@style/Leaf3Switch"
                 android:layout_marginTop="4dp"
                 android:text="@string/navigation_refresh_button" />
+
+            <Switch
+                android:id="@+id/navigation_eink_center_button"
+                style="@style/Leaf3Switch"
+                android:text="@string/navigation_eink_center_button" />
         </LinearLayout>
 
         <ScrollView

@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="utf-8"?>
+<org.lineageos.leaf3controls.EinkCenterRootView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/transparent"
+    android:clickable="true"
+    android:focusable="true">
+
+    <ScrollView
+        android:id="@+id/eink_center_panel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:background="@drawable/panel_outline"
+        android:clickable="true"
+        android:fillViewport="false"
+        android:overScrollMode="never"
+        android:paddingStart="18dp"
+        android:paddingTop="14dp"
+        android:paddingEnd="18dp"
+        android:paddingBottom="18dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    style="@style/Leaf3SectionTitle"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:text="@string/eink_center" />
+
+                <Button
+                    android:id="@+id/eink_center_close"
+                    style="@style/Leaf3PagerButton"
+                    android:layout_width="92dp"
+                    android:layout_height="44dp"
+                    android:text="@string/close" />
+            </LinearLayout>
+
+            <RadioGroup
+                android:id="@+id/eink_center_scope"
+                style="@style/Leaf3CompactChoiceGroup"
+                android:layout_height="52dp">
+
+                <RadioButton
+                    android:id="@+id/eink_center_scope_current"
+                    style="@style/Leaf3CompactChoice"
+                    android:text="@string/current_app" />
+
+                <RadioButton
+                    android:id="@+id/eink_center_scope_global"
+                    style="@style/Leaf3CompactChoice"
+                    android:text="@string/global_default" />
+            </RadioGroup>
+
+            <TextView
+                style="@style/Leaf3Description"
+                android:text="@string/global_default_hint" />
+
+            <RadioGroup
+                android:id="@+id/eink_center_modes"
+                style="@style/Leaf3CompactChoiceGroup"
+                android:layout_height="60dp"
+                android:layout_marginTop="8dp">
+
+                <RadioButton
+                    android:id="@+id/eink_center_mode_balanced"
+                    style="@style/Leaf3CompactChoice"
+                    android:text="@string/balanced" />
+
+                <RadioButton
+                    android:id="@+id/eink_center_mode_normal"
+                    style="@style/Leaf3CompactChoice"
+                    android:text="@string/normal" />
+
+                <RadioButton
+                    android:id="@+id/eink_center_mode_speed"
+                    style="@style/Leaf3CompactChoice"
+                    android:text="@string/speed" />
+
+                <RadioButton
+                    android:id="@+id/eink_center_mode_a2"
+                    style="@style/Leaf3CompactChoice"
+                    android:text="@string/a2" />
+
+                <RadioButton
+                    android:id="@+id/eink_center_mode_regal"
+                    style="@style/Leaf3CompactChoice"
+                    android:text="@string/regal" />
+
+                <RadioButton
+                    android:id="@+id/eink_center_mode_reader"
+                    style="@style/Leaf3CompactChoice"
+                    android:text="@string/reader" />
+            </RadioGroup>
+
+            <TextView
+                android:id="@+id/eink_center_brightness_label"
+                style="@style/Leaf3ControlLabel"
+                android:layout_marginTop="8dp" />
+
+            <SeekBar
+                android:id="@+id/eink_center_brightness"
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:max="100"
+                android:progressTint="#000000"
+                android:thumbTint="#000000" />
+
+            <Switch
+                android:id="@+id/eink_center_follow_brightness"
+                style="@style/Leaf3Switch"
+                android:layout_height="44dp"
+                android:text="@string/follow_android_brightness_short" />
+
+            <TextView
+                android:id="@+id/eink_center_temperature_label"
+                style="@style/Leaf3ControlLabel"
+                android:layout_marginTop="4dp" />
+
+            <SeekBar
+                android:id="@+id/eink_center_temperature"
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:max="100"
+                android:progressTint="#000000"
+                android:thumbTint="#000000" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:layout_marginTop="10dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/eink_center_clean"
+                    style="@style/Leaf3ActionButton"
+                    android:layout_marginEnd="4dp"
+                    android:text="@string/full_refresh" />
+
+                <Button
+                    android:id="@+id/eink_center_more"
+                    style="@style/Leaf3ActionButton"
+                    android:layout_marginStart="4dp"
+                    android:text="@string/more_settings" />
+            </LinearLayout>
+        </LinearLayout>
+    </ScrollView>
+</org.lineageos.leaf3controls.EinkCenterRootView>
