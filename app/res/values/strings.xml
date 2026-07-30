@@ -91,6 +91,8 @@
     <string name="idle_capture">Idle capture</string>
     <string name="tuning_title">Refresh tuning</string>
     <string name="tuning_description">Fine-tune responsiveness, battery use, and how quickly fast-update ghosting is cleaned.</string>
+    <string name="tuning_refresh">Refresh</string>
+    <string name="tuning_display">Display</string>
     <string name="composer_limitations">Composer-native EPDC is active. Touch-driven moving view regions receive transient ANIM hints. Idle capture, raw-input fallback detection, sleep-screen rendering, contrast, and gamma belong to the screenshot bridge and remain unavailable. Refresh modes, dithering, Reader cleanup, settled Regal, and regional ghost cleanup remain active.</string>
     <string name="idle_description">How often the bridge checks an unchanged screen. Touch always wakes it immediately.</string>
     <string name="idle_responsive_short">Responsive\n1 sec</string>

@@ -7,24 +7,18 @@
     android:clickable="true"
     android:focusable="true">
 
-    <ScrollView
+    <LinearLayout
         android:id="@+id/eink_center_panel"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom"
         android:background="@drawable/panel_outline"
         android:clickable="true"
-        android:fillViewport="false"
-        android:overScrollMode="never"
         android:paddingStart="18dp"
         android:paddingTop="14dp"
         android:paddingEnd="18dp"
-        android:paddingBottom="18dp">
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical">
+        android:paddingBottom="18dp"
+        android:orientation="vertical">
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -153,6 +147,5 @@
                     android:layout_marginStart="4dp"
                     android:text="@string/more_settings" />
             </LinearLayout>
-        </LinearLayout>
-    </ScrollView>
+    </LinearLayout>
 </org.lineageos.leaf3controls.EinkCenterRootView>

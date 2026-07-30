@@ -82,10 +82,13 @@ public final class MainActivity extends Activity {
     final RadioGroup cleanupPolicies = findViewById(R.id.cleanup_policies);
     final RadioGroup backendModes = findViewById(R.id.backend_modes);
     final RadioGroup navigation = findViewById(R.id.navigation);
+    final RadioGroup tuningNavigation = findViewById(R.id.tuning_navigation);
     final View refreshPage = findViewById(R.id.page_refresh);
     final View tuningPage = findViewById(R.id.page_tuning);
     final View lightPage = findViewById(R.id.page_light);
     final View statusPage = findViewById(R.id.page_status);
+    final View tuningRefreshPage = findViewById(R.id.tuning_refresh_page);
+    final View tuningDisplayPage = findViewById(R.id.tuning_display_page);
     final Switch frontlightEnabled = findViewById(R.id.frontlight_enabled);
     final Switch disableAnimations = findViewById(R.id.disable_animations);
     sleepScreenModes = findViewById(R.id.sleep_screen_modes);
@@ -111,6 +114,15 @@ public final class MainActivity extends Activity {
     contrastLabel = findViewById(R.id.contrast_label);
     gammaLabel = findViewById(R.id.gamma_label);
     diagnostics = findViewById(R.id.diagnostics);
+
+    tuningNavigation.check(R.id.tuning_refresh);
+    tuningNavigation.setOnCheckedChangeListener(
+        (group, checkedId) -> {
+          tuningRefreshPage.setVisibility(
+              checkedId == R.id.tuning_refresh ? View.VISIBLE : View.GONE);
+          tuningDisplayPage.setVisibility(
+              checkedId == R.id.tuning_display ? View.VISIBLE : View.GONE);
+        });
 
     selectRefreshMode(refreshModes,
                       SystemProperties.get(
