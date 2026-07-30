@@ -2870,7 +2870,18 @@ status_t requestComposerCommand(int32_t command) {
   data.writeInt32(command);
   const status_t status =
       surface_flinger->transact(kLeaf3FrameNotifierTransaction, data, &reply);
-  return status == NO_ERROR ? static_cast<status_t>(reply.readInt32()) : status;
+  if (status != NO_ERROR) {
+    return status;
+  }
+  // This transaction gates the hand-off from the composer writer to the
+  // direct-EBC fallback. Never mistake a malformed reply for success: doing
+  // so could let both paths submit to the panel concurrently.
+  if (reply.dataAvail() < sizeof(int32_t)) {
+    ALOGE("SurfaceFlinger returned an empty Leaf3 EPDC reply for command %d",
+          command);
+    return android::BAD_VALUE;
+  }
+  return static_cast<status_t>(reply.readInt32());
 }
 
 status_t requestComposerFullRefresh() {

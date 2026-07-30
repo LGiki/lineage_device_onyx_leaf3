@@ -216,6 +216,14 @@ Error Composer::presentDisplay(Display display, int* outPresentFence)
             bridge,
         )
         self.assertIn(
+            "reply.dataAvail() < sizeof(int32_t)",
+            bridge,
+        )
+        self.assertIn(
+            "return android::BAD_VALUE;",
+            bridge,
+        )
+        self.assertIn(
             "damage.intersectsDirty(*frame.transient_hint)",
             bridge,
         )
