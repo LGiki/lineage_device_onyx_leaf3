@@ -18,6 +18,7 @@ import android.os.PowerManager;
 import android.os.RemoteException;
 import android.os.SystemProperties;
 import android.provider.Settings;
+import android.service.quicksettings.TileService;
 import android.util.Log;
 
 import java.util.List;
@@ -106,6 +107,8 @@ public final class Leaf3StateService extends Service {
     }
     publishState();
     applyRefreshMode();
+    TileService.requestListeningState(
+        this, new ComponentName(this, RefreshModeTileService.class));
     return START_STICKY;
   }
 

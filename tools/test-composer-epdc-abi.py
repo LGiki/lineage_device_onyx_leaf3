@@ -244,6 +244,11 @@ Error Composer::presentDisplay(Display display, int* outPresentFence)
             'std::string(propertyValue(capture_mode, "notify")) == "poll"',
             bridge,
         )
+        self.assertIn("kEbcIoctlRetryAttempts", bridge)
+        self.assertIn("resetEbcState", bridge)
+        self.assertIn("sleep-screen update failed; keeping the bridge alive", bridge)
+        self.assertIn("if (source != nullptr)", bridge)
+        self.assertNotIn("return 1;", bridge)
         self.assertIn(
             "setRefreshCallback([this] { signalRefresh(); })",
             patcher.REFRESH_CALLBACK,

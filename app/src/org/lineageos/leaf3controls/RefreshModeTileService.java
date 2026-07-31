@@ -18,7 +18,6 @@ public final class RefreshModeTileService extends TileService {
     intent.setAction(Leaf3StateService.ACTION_TEMPORARY_MODE);
     intent.putExtra(Leaf3StateService.EXTRA_REFRESH_MODE, nextMode);
     startService(intent);
-    updateTile(nextMode);
   }
 
   private String effectiveMode() {

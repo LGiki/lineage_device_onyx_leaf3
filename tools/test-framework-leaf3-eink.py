@@ -416,6 +416,11 @@ class FrameworkEinkPatcherTest(unittest.TestCase):
             / "app/src/org/lineageos/leaf3controls/"
             "Leaf3StateService.java"
         ).read_text()
+        refresh_tile = (
+            self.root
+            / "app/src/org/lineageos/leaf3controls/"
+            "RefreshModeTileService.java"
+        ).read_text()
         self.assertIn("TYPE_STATUS_BAR_SUB_PANEL", service)
         self.assertIn("params.token = WINDOW_TOKEN", service)
         self.assertIn("FLAG_WATCH_OUTSIDE_TOUCH", service)
@@ -433,6 +438,8 @@ class FrameworkEinkPatcherTest(unittest.TestCase):
             "Leaf3Settings.NAV_EINK_CENTER_BUTTON_CHANGED", activity
         )
         self.assertIn("ACTION_CLEAR_TEMPORARY_MODE", state_service)
+        self.assertIn("TileService.requestListeningState(", state_service)
+        self.assertNotIn("updateTile(nextMode)", refresh_tile)
 
     def test_navigation_refresh_upgrades_unsafe_vector_patch(self):
         with tempfile.TemporaryDirectory() as temporary:

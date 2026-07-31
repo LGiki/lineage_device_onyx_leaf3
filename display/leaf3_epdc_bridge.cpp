@@ -134,6 +134,9 @@ constexpr useconds_t kIdleTwoSecondDelayUs = 2000000;
 constexpr useconds_t kIdleFiveSecondDelayUs = 5000000;
 constexpr useconds_t kTouchSettleDelayUs = 32000;
 constexpr useconds_t kRetryDelayUs = 1000000;
+constexpr useconds_t kEbcIoctlRetryDelayUs = 100000;
+constexpr uint32_t kEbcIoctlRetryAttempts = 3;
+constexpr uint32_t kSleepScreenRetryAttempts = 3;
 constexpr uint32_t kIdleThresholdFrames = 10;
 constexpr uint32_t kInputProbeFrames = 6;
 
@@ -1839,16 +1842,25 @@ private:
 
 class EbcDevice {
 public:
-  ~EbcDevice() {
+  ~EbcDevice() { reset(); }
+
+  void reset() {
     if (buffer_ != MAP_FAILED) {
       munmap(buffer_, buffer_size_);
+      buffer_ = MAP_FAILED;
     }
     if (fd_ >= 0) {
       close(fd_);
+      fd_ = -1;
     }
+    buffer_size_ = 0;
+    width_ = 0;
+    height_ = 0;
+    last_update_us_ = 0;
   }
 
   bool init(uint32_t width, uint32_t height) {
+    reset();
     fd_ = open(kEbcDevice, O_RDWR | O_CLOEXEC);
     if (fd_ < 0) {
       ALOGE("open(%s) failed: %s", kEbcDevice, strerror(errno));
@@ -1860,6 +1872,7 @@ public:
     if (info_size != 0 && info_size != static_cast<int>(sizeof(info))) {
       ALOGE("unexpected EBC buffer-info size %d (expected %zu)", info_size,
             sizeof(info));
+      reset();
       return false;
     }
 
@@ -1868,11 +1881,13 @@ public:
     info.words[7] = height;
     if (ioctl(fd_, kEbcGetBufferInfo, &info) < 0) {
       ALOGE("EBC GET_BUFFER_INFO failed: %s", strerror(errno));
+      reset();
       return false;
     }
     if (info.words[6] != width || info.words[7] != height) {
       ALOGE("EBC geometry %ux%u does not match SurfaceFlinger %ux%u",
             info.words[6], info.words[7], width, height);
+      reset();
       return false;
     }
 
@@ -1892,6 +1907,7 @@ public:
         mmap(nullptr, buffer_size_, PROT_READ | PROT_WRITE, MAP_SHARED, fd_, 0);
     if (buffer_ == MAP_FAILED) {
       ALOGE("EBC mmap(%zu) failed: %s", buffer_size_, strerror(errno));
+      reset();
       return false;
     }
 
@@ -2058,15 +2074,32 @@ private:
     update.temperature = kEbcAutoTemperature;
     update.flags = dither ? kEbcDitherFlag : 0;
 
-    const int64_t ioctl_start_us = monotonicMicros();
-    if (ioctl(fd_, kEbcSendUpdate, &update) < 0) {
-      ALOGE("EBC SEND_UPDATE marker=%u failed: %s", update.update_marker,
-            strerror(errno));
-      return false;
+    for (uint32_t attempt = 1; attempt <= kEbcIoctlRetryAttempts; ++attempt) {
+      const int64_t ioctl_start_us = monotonicMicros();
+      if (ioctl(fd_, kEbcSendUpdate, &update) >= 0) {
+        ioctl_time_us_ +=
+            static_cast<uint64_t>(monotonicMicros() - ioctl_start_us);
+        last_update_us_ = monotonicMicros();
+        return true;
+      }
+
+      const int error = errno;
+      ioctl_time_us_ +=
+          static_cast<uint64_t>(monotonicMicros() - ioctl_start_us);
+      const bool retryable =
+          error == EINTR || error == EAGAIN || error == EBUSY;
+      if (!retryable || attempt == kEbcIoctlRetryAttempts) {
+        ALOGE("EBC SEND_UPDATE marker=%u failed after %u attempt(s): %s",
+              update.update_marker, attempt, strerror(error));
+        return false;
+      }
+      ALOGW("EBC SEND_UPDATE marker=%u attempt %u failed: %s; retrying",
+            update.update_marker, attempt, strerror(error));
+      if (error != EINTR) {
+        usleep(kEbcIoctlRetryDelayUs);
+      }
     }
-    ioctl_time_us_ += static_cast<uint64_t>(monotonicMicros() - ioctl_start_us);
-    last_update_us_ = monotonicMicros();
-    return true;
+    return false;
   }
 
   int fd_ = -1;
@@ -3074,6 +3107,21 @@ int main() {
   uint64_t accounted_ioctl_us = 0;
   std::string full_refresh_token = settings.full_refresh_token;
   RefreshMode active_mode = settings.mode;
+  auto resetEbcState = [&] {
+    ebc.reset();
+    initialized = false;
+    first_refresh = true;
+    previous.clear();
+    cleanup_pending = false;
+    ghost.clear();
+    scroll_in_progress = false;
+    settled_quality_damage.reset();
+    settled_quality_deadline_us = 0;
+    page_turn_count = 0;
+    cleanup_deadline_us = 0;
+    unchanged_frames = 0;
+    idle_poll_count = 0;
+  };
   ALOGI("refresh mode: %s", refreshModeName(active_mode));
 
   for (;;) {
@@ -3126,22 +3174,41 @@ int main() {
         if (initialized && settings.sleep_screen != SleepScreen::kRetain) {
           ALOGI("display is off; rendering sleep screen");
           const int64_t submit_start_us = monotonicMicros();
-          const bool rendered = settings.sleep_screen == SleepScreen::kImage
-                                    ? ebc.showSleepImage()
-                                    : ebc.clear();
-          if (!rendered) {
-            if (settings.sleep_screen != SleepScreen::kImage || !ebc.clear()) {
-              return 1;
+          bool rendered = false;
+          for (uint32_t attempt = 1;
+               attempt <= kSleepScreenRetryAttempts && !rendered; ++attempt) {
+            rendered = settings.sleep_screen == SleepScreen::kImage
+                           ? ebc.showSleepImage()
+                           : ebc.clear();
+            if (!rendered && settings.sleep_screen == SleepScreen::kImage) {
+              rendered = ebc.clear();
+              if (rendered) {
+                ALOGW("sleep image unavailable; cleared the panel instead");
+              }
             }
-            ALOGW("sleep image unavailable; cleared the panel instead");
+            if (!rendered && attempt < kSleepScreenRetryAttempts) {
+              ALOGW("sleep-screen update attempt %u failed; reopening EBC",
+                    attempt);
+              usleep(kEbcIoctlRetryDelayUs);
+              if (!ebc.init(panel_width, panel_height)) {
+                ALOGW("could not reopen EBC for sleep-screen retry");
+              }
+            }
           }
-          ++stats.full_updates;
-          stats.updated_pixels += panel_pixels;
+          if (rendered) {
+            ++stats.full_updates;
+            stats.updated_pixels += panel_pixels;
+          } else {
+            ALOGE("sleep-screen update failed; keeping the bridge alive");
+            resetEbcState();
+          }
           stats.submit_time_us +=
               static_cast<uint64_t>(monotonicMicros() - submit_start_us);
         }
         ALOGI("display is off; releasing the compositor frame source");
-        source->stop();
+        if (source != nullptr) {
+          source->stop();
+        }
         source.reset();
         display_was_on = false;
         first_refresh = true;
@@ -3221,11 +3288,14 @@ int main() {
     // A manual cleanup must work even when the compositor is quiet, so it is
     // served from the persistent EBC buffer rather than a new frame.
     if (pending_full_refresh && initialized && !first_refresh) {
-      pending_full_refresh = false;
       const int64_t submit_start_us = monotonicMicros();
       if (!ebc.refreshFull(kWaveformGc16, settings.dither)) {
-        return 1;
+        ALOGW("manual full refresh failed; reopening EBC for the next frame");
+        resetEbcState();
+        source->requestCapture();
+        continue;
       }
+      pending_full_refresh = false;
       stats.submit_time_us +=
           static_cast<uint64_t>(monotonicMicros() - submit_start_us);
       ++stats.full_updates;
@@ -3272,7 +3342,10 @@ int main() {
       if (!ebc.sendStagedUpdate(*settled_quality_damage, kWaveformRegal,
                                 settings.dither,
                                 /*full_refresh=*/false)) {
-        return 1;
+        ALOGW("settled-quality update failed; reopening EBC");
+        resetEbcState();
+        source->requestCapture();
+        continue;
       }
       stats.submit_time_us +=
           static_cast<uint64_t>(monotonicMicros() - submit_start_us);
@@ -3319,7 +3392,10 @@ int main() {
       if (!initialized) {
         if (!ebc.init(frame.width, frame.height)) {
           source->release();
-          return 1;
+          ALOGW("EBC initialization failed; retrying with a later frame");
+          source->deferCaptureUntil(monotonicMicros() + kRetryDelayUs);
+          source->requestCapture();
+          continue;
         }
         initialized = true;
         panel_width = frame.width;
@@ -3339,7 +3415,9 @@ int main() {
         ALOGE("frame %ux%u no longer matches the %ux%u panel", frame.width,
               frame.height, panel_width, panel_height);
         source->release();
-        return 1;
+        resetEbcState();
+        source->requestCapture();
+        continue;
       }
 
       const bool geometry_changed =
@@ -3498,6 +3576,7 @@ int main() {
         }
 
         bool submitted_any = false;
+        bool submission_failed = false;
         bool needs_cleanup = false;
 
         for (const ChangedRect &rect : rects) {
@@ -3585,8 +3664,8 @@ int main() {
                            : rect;
           if (!ebc.sendStagedUpdate(update_rect, waveform, dither,
                                     full_refresh)) {
-            source->release();
-            return 1;
+            submission_failed = true;
+            break;
           }
           stats.submit_time_us +=
               static_cast<uint64_t>(monotonicMicros() - submit_start_us);
@@ -3637,7 +3716,14 @@ int main() {
           scroll.invalidate(rect.top, rect.bottom);
         }
 
-        if (submitted_any) {
+        if (submission_failed) {
+          ALOGW("frame update failed; reopening EBC for a full retry");
+          resetEbcState();
+          source->deferCaptureUntil(monotonicMicros() + kRetryDelayUs);
+          source->requestCapture();
+        }
+
+        if (submitted_any && !submission_failed) {
           if (sparse_damage) {
             damage.forEachDirtyRun([&](const ChangedRect &rect) {
               saveFrameRegion(frame.pixels, frame.width, frame.height,
@@ -3715,7 +3801,11 @@ int main() {
         if (!ebc.sendStagedUpdate(cleanup_damage, kWaveformGc16,
                                   settings.dither,
                                   /*full_refresh=*/false)) {
-          return 1;
+          ALOGW("cleanup update failed; reopening EBC for a full redraw");
+          resetEbcState();
+          source->deferCaptureUntil(monotonicMicros() + kRetryDelayUs);
+          source->requestCapture();
+          continue;
         }
         stats.submit_time_us +=
             static_cast<uint64_t>(monotonicMicros() - submit_start_us);
