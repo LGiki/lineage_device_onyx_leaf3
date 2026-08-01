@@ -209,6 +209,58 @@ Error Composer::presentDisplay(Display display, int* outPresentFence)
             "kCleanupPolicyPollInterval, wakePending",
             controller,
         )
+        self.assertIn(
+            "now, readerPageCandidate, pageInterval",
+            controller,
+        )
+        self.assertIn("mImpl->readerPages.advanceGesture(", controller)
+        self.assertIn(
+            "mImpl->readerPages.advanceScroll(now, pageInterval)",
+            controller,
+        )
+        self.assertIn("mImpl->transientPageTurn", controller)
+        self.assertIn(
+            "trackTransientGhosts = leaf3ShouldTrackTransientGhosts(",
+            controller,
+        )
+        self.assertIn(
+            "mode == \"reader\" && mImpl->transientPageTurn",
+            controller,
+        )
+        self.assertIn(
+            "readerPageTurnActive && cleanup != \"manual\" &&\n"
+            "      mImpl->cleanupSchedule.pending()",
+            controller,
+        )
+        self.assertIn(
+            "mImpl->transientPageTurn && !transient.isEmpty()",
+            controller,
+        )
+        prepare = controller.index("Leaf3EpdcController::preparePresent(")
+        postpone = controller.index(
+            "cleanup already owed by earlier scrolling", prepare
+        )
+        forced_cleanup = controller.index(
+            "const nsecs_t cleanupDeadline =", prepare
+        )
+        self.assertLess(postpone, forced_cleanup)
+        self.assertIn("cleanup != \"manual\" && pageInterval > 0", controller)
+        self.assertIn("readerPages.settle(now, supportedPageInterval())", controller)
+        self.assertRegex(
+            controller,
+            r"(?s)makeReaderFullRefreshLocked\(\).*?"
+            r"return \{\s*makeUpdateLocked\(bounds,\s*"
+            r"kWaveformGc16 \| kModeFull \| ditherFlag\(\)\)",
+        )
+        self.assertIn(
+            "readerPresentResult == Leaf3ReaderPageResult::FullRefresh",
+            controller,
+        )
+        self.assertIn(
+            "if (!android::base::GetBoolProperty(kInteractiveProperty, true)) {\n"
+            "    mImpl->discardPendingWorkLocked();",
+            controller,
+        )
         self.assertIn("blockAndWaitForIdle()", controller)
         self.assertIn("kSubmissionDrainDelay", controller)
         self.assertIn(
@@ -467,11 +519,23 @@ int main() {
             !shouldActivateLeaf3Controller(true, true, false, true, true));
     static_assert(
             !shouldActivateLeaf3Controller(true, true, false, false, false));
+    static_assert(shouldRunLeaf3Timers(true, true));
+    static_assert(!shouldRunLeaf3Timers(true, false));
+    static_assert(!shouldRunLeaf3Timers(false, true));
     static_assert(isLeaf3CommitEpdcCommand(kLeaf3CommitEpdcCommand));
     static_assert(!isLeaf3CommitEpdcCommand(0x08010000));
     static_assert(leaf3TransientHintAuthorized(10123, 10123));
     static_assert(!leaf3TransientHintAuthorized(10123, 10124));
     static_assert(!leaf3TransientHintAuthorized(-1, -1));
+    static_assert(leaf3ReaderPageCandidate(true, true, true, false, false));
+    static_assert(leaf3ReaderPageCandidate(true, false, false, false, false));
+    static_assert(leaf3ReaderPageCandidate(true, false, false, true, true));
+    static_assert(!leaf3ReaderPageCandidate(true, false, false, true, false));
+    static_assert(!leaf3ReaderPageCandidate(true, false, true, false, false));
+    static_assert(!leaf3ReaderPageCandidate(false, true, false, false, false));
+    static_assert(leaf3ShouldTrackTransientGhosts(true, false));
+    static_assert(!leaf3ShouldTrackTransientGhosts(true, true));
+    static_assert(!leaf3ShouldTrackTransientGhosts(false, false));
 
     const Leaf3PolicyRect separatedDamage[] = {
         {0, 0, 100, 10},
@@ -508,6 +572,129 @@ int main() {
     const auto overflowing = splitLeaf3TransientDamage(
             overflowingDamage, 9, Leaf3PolicyRect{0, 20, 100, 30});
     if (!overflowing.overflow) return 12;
+
+    Leaf3ReaderPageSchedule readerPages;
+    readerPages.notePresent(1000000000, true);
+    readerPages.notePresent(1100000000, true);
+    readerPages.notePresent(1200000000, false);
+    if (readerPages.deadline() != 1380000000) return 13;
+    if (readerPages.settle(1379999999, 2) !=
+            Leaf3ReaderPageResult::None) return 14;
+    if (readerPages.settle(1380000000, 2) !=
+            Leaf3ReaderPageResult::Counted) return 15;
+    if (readerPages.pageCount() != 1 || readerPages.deadline() != 0) return 16;
+    readerPages.notePresent(2000000000, true);
+    if (readerPages.settle(2180000000, 2) !=
+            Leaf3ReaderPageResult::FullRefresh) return 17;
+    if (readerPages.pageCount() != 0 || readerPages.deadline() != 0) return 18;
+    readerPages.notePresent(3000000000, true);
+    if (readerPages.settle(3180000000, 0) !=
+            Leaf3ReaderPageResult::Counted) return 19;
+    if (readerPages.pageCount() != 0) return 20;
+    readerPages.notePresent(4000000000, false);
+    if (readerPages.deadline() != 0) return 21;
+    readerPages.notePresent(4100000000, true);
+    readerPages.reset();
+    if (readerPages.deadline() != 0 || readerPages.pageCount() != 0) return 22;
+    readerPages.notePresent(5000000000, true);
+    if (readerPages.advancePresent(5200000000, true, 2) !=
+            Leaf3ReaderPageResult::Counted) return 23;
+    if (readerPages.deadline() != 5380000000) return 24;
+    if (readerPages.settle(5380000000, 2) !=
+            Leaf3ReaderPageResult::FullRefresh) return 25;
+    if (readerPages.pageCount() != 0) return 26;
+    readerPages.notePresent(6000000000, true);
+    if (readerPages.advancePresent(6050000000, true, 2) !=
+            Leaf3ReaderPageResult::None) return 27;
+    if (readerPages.settle(6230000000, 2) !=
+            Leaf3ReaderPageResult::Counted) return 28;
+    readerPages.notePresent(7000000000, true);
+    if (readerPages.advancePresent(7180000000, true, 2) !=
+            Leaf3ReaderPageResult::Counted) return 29;
+    if (readerPages.deadline() != 7360000000 ||
+            readerPages.pageCount() != 0) return 30;
+    if (readerPages.settle(7360000000, 2) !=
+            Leaf3ReaderPageResult::FullRefresh) return 64;
+    readerPages.reset();
+    if (readerPages.advanceGesture(7500000000, 10, 3) !=
+            Leaf3ReaderPageResult::Counted) return 31;
+    if (readerPages.advanceGesture(7500000001, 10, 3) !=
+            Leaf3ReaderPageResult::None) return 32;
+    if (readerPages.pageCount() != 1) return 33;
+    if (readerPages.advanceGesture(7600000000, 11, 3) !=
+            Leaf3ReaderPageResult::Counted) return 34;
+    if (readerPages.advanceGesture(7700000000, 12, 3) !=
+            Leaf3ReaderPageResult::Counted) return 35;
+    if (readerPages.pageCount() != 0 ||
+            readerPages.deadline() != 7880000000) return 36;
+    if (readerPages.advanceGesture(7800000000, 12, 3) !=
+            Leaf3ReaderPageResult::None) return 54;
+    if (readerPages.deadline() != 7980000000) return 55;
+    if (readerPages.settle(7979999999, 3) !=
+            Leaf3ReaderPageResult::None) return 56;
+    if (readerPages.settle(7980000000, 3) !=
+            Leaf3ReaderPageResult::FullRefresh) return 57;
+    readerPages.reset();
+    readerPages.notePresent(8000000000, true);
+    if (readerPages.advanceGesture(8179999999, 20, 2) !=
+            Leaf3ReaderPageResult::Counted) return 37;
+    if (readerPages.pageCount() != 1 || readerPages.deadline() != 0) return 38;
+    if (readerPages.advanceGesture(8180000000, 20, 2) !=
+            Leaf3ReaderPageResult::None) return 39;
+    if (readerPages.advanceGesture(8180000000, 0, 2) !=
+            Leaf3ReaderPageResult::None) return 40;
+    readerPages.reset();
+    readerPages.notePresent(9000000000, true);
+    if (readerPages.advanceGesture(9180000000, 21, 10) !=
+            Leaf3ReaderPageResult::Counted) return 41;
+    if (readerPages.pageCount() != 2 || readerPages.deadline() != 0) return 42;
+    readerPages.reset();
+    if (readerPages.advanceGesture(10000000000, 30, 2) !=
+            Leaf3ReaderPageResult::Counted) return 43;
+    readerPages.notePresent(10100000000, true);
+    if (readerPages.advanceGesture(10280000000, 31, 2) !=
+            Leaf3ReaderPageResult::Counted) return 44;
+    if (readerPages.pageCount() != 0 ||
+            readerPages.deadline() != 10460000000) return 45;
+    if (readerPages.settle(10460000000, 2) !=
+            Leaf3ReaderPageResult::FullRefresh) return 65;
+    readerPages.reset();
+    readerPages.notePresent(11000000000, true);
+    if (readerPages.advanceGesture(11180000000, 40, 2) !=
+            Leaf3ReaderPageResult::Counted) return 46;
+    if (readerPages.pageCount() != 0 ||
+            readerPages.deadline() != 11360000000) return 47;
+    if (readerPages.settle(11360000000, 2) !=
+            Leaf3ReaderPageResult::FullRefresh) return 58;
+    readerPages.reset();
+    readerPages.notePresent(12000000000, true);
+    if (readerPages.advanceScroll(12179999999, 10) !=
+            Leaf3ReaderPageResult::None) return 48;
+    if (readerPages.pageCount() != 0 || readerPages.deadline() != 0) return 49;
+    readerPages.notePresent(13000000000, true);
+    if (readerPages.advanceScroll(13180000000, 10) !=
+            Leaf3ReaderPageResult::Counted) return 50;
+    if (readerPages.pageCount() != 1 || readerPages.deadline() != 0) return 51;
+    readerPages.notePresent(14000000000, true);
+    if (readerPages.advanceScroll(14180000000, 2) !=
+            Leaf3ReaderPageResult::Counted) return 52;
+    if (readerPages.pageCount() != 0 ||
+            readerPages.deadline() != 14360000000) return 53;
+    if (readerPages.settle(14360000000, 2) !=
+            Leaf3ReaderPageResult::FullRefresh) return 66;
+    readerPages.reset();
+    if (readerPages.advanceGesture(15000000000, 50, 1) !=
+            Leaf3ReaderPageResult::Counted) return 59;
+    if (readerPages.deadline() != 15180000000) return 60;
+    if (readerPages.advanceGesture(15100000000, 51, 1) !=
+            Leaf3ReaderPageResult::None) return 61;
+    if (readerPages.pageCount() != 0 ||
+            readerPages.deadline() != 15280000000) return 62;
+    if (readerPages.advancePresent(15280000000, false, 1) !=
+            Leaf3ReaderPageResult::Counted) return 63;
+    if (readerPages.deadline() != 15460000000) return 67;
+    if (readerPages.settle(15460000000, 1) !=
+            Leaf3ReaderPageResult::FullRefresh) return 68;
 
     Leaf3CleanupSchedule cleanup;
     cleanup.noteActivity(1000000000);

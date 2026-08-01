@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 
 
-PATCHER_VERSION = "9"
+PATCHER_VERSION = "10"
 
 DEFAULT_FORCE_CLIENT_COMPOSITION = (
     "    refreshArgs.devOptForceClientComposition = mDebugDisableHWC;\n"

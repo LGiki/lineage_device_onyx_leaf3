@@ -32,7 +32,7 @@ public final class Leaf3EinkHelper {
     private static final String SURFACE_COMPOSER_TOKEN =
             "android.ui.ISurfaceComposer";
     private static final int TRANSIENT_HINT_TRANSACTION = 1038;
-    private static final int TRANSIENT_HINT_VERSION = 1;
+    private static final int TRANSIENT_HINT_VERSION = 2;
     private static final int TRANSIENT_HINT_CLEAR = 0;
     private static final int TRANSIENT_HINT_SET = 1;
     private static final int TRANSIENT_HINT_DURATION_MS = 700;
@@ -43,6 +43,10 @@ public final class Leaf3EinkHelper {
     private static final int PENDING_HINT_NONE = 0;
     private static final int PENDING_HINT_CLEAR = 1;
     private static final int PENDING_HINT_SET = 2;
+    private static final int GESTURE_DIRECTION_UNKNOWN = 0;
+    private static final int GESTURE_DIRECTION_HORIZONTAL = 1;
+    private static final int GESTURE_DIRECTION_VERTICAL = 2;
+    private static final float GESTURE_DIRECTION_DOMINANCE = 1.5f;
 
     private static float sDownRawX;
     private static float sDownRawY;
@@ -55,15 +59,26 @@ public final class Leaf3EinkHelper {
     private static int sPendingHintCommand = PENDING_HINT_NONE;
     private static WeakReference<View> sPendingHintView =
             new WeakReference<>(null);
+    private static boolean sPendingPageTurn;
+    private static int sPendingGestureId;
     private static WeakReference<View> sLastHintView =
             new WeakReference<>(null);
+    private static boolean sLastPageTurn;
+    private static int sLastGestureId;
     private static boolean sHintFrameScheduled;
     private static boolean sGestureHinted;
+    private static int sGestureSequence =
+            (int) (SystemClock.uptimeMillis() & 0x3fffffff);
+    private static int sCurrentGestureId;
+    private static long sCurrentGestureDownTime = -1;
+    private static int sGestureDirection = GESTURE_DIRECTION_UNKNOWN;
     private static int sFlingGeneration;
     private static long sFlingDeadline;
     private static long sLastFlingRenewal;
     private static long sLastFlingMotion;
     private static long sFlingMotionSignature;
+    private static boolean sFlingPageTurn;
+    private static int sFlingGestureId;
     private static WeakReference<View> sFlingView = new WeakReference<>(null);
     private static ViewTreeObserver.OnPreDrawListener sFlingDrawListener;
 
@@ -102,11 +117,17 @@ public final class Leaf3EinkHelper {
         }
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
+                if (event.getDownTime() == sCurrentGestureDownTime) {
+                    break;
+                }
+                sCurrentGestureDownTime = event.getDownTime();
+                sCurrentGestureId = nextGestureId();
                 sDownRawX = event.getRawX();
                 sDownRawY = event.getRawY();
+                sGestureDirection = GESTURE_DIRECTION_UNKNOWN;
                 sGestureHinted = false;
                 stopFlingRenewal();
-                queueTransientHintClear();
+                clearTransientHintNow();
                 break;
             case MotionEvent.ACTION_MOVE:
                 if (!handled) {
@@ -120,11 +141,19 @@ public final class Leaf3EinkHelper {
                 }
                 final Rect visible = new Rect();
                 if (view.getGlobalVisibleRect(visible) && !visible.isEmpty()) {
-                    sGestureHinted = true;
-                    queueTransientHint(view, visible);
+                    final float deltaX = Math.abs(event.getRawX() - sDownRawX);
+                    final float deltaY = Math.abs(event.getRawY() - sDownRawY);
+                    final boolean pageTurn = isPageTurnGesture(
+                            deltaX, deltaY, slop);
+                    if (sGestureDirection != GESTURE_DIRECTION_UNKNOWN) {
+                        sGestureHinted = true;
+                        queueTransientHint(view, visible, pageTurn,
+                                sCurrentGestureId);
+                    }
                 }
                 break;
             case MotionEvent.ACTION_CANCEL:
+                sCurrentGestureDownTime = -1;
                 sGestureHinted = false;
                 queueTransientHintClear();
                 break;
@@ -132,6 +161,7 @@ public final class Leaf3EinkHelper {
                 if (sGestureHinted) {
                     startFlingRenewal();
                 }
+                sCurrentGestureDownTime = -1;
                 sGestureHinted = false;
                 break;
             default:
@@ -139,18 +169,59 @@ public final class Leaf3EinkHelper {
         }
     }
 
+    private static int nextGestureId() {
+        if (sGestureSequence == Integer.MAX_VALUE) {
+            sGestureSequence = 0;
+        }
+        return ++sGestureSequence;
+    }
+
+    private static boolean isPageTurnGesture(float deltaX, float deltaY,
+            int slop) {
+        if (sGestureDirection == GESTURE_DIRECTION_UNKNOWN) {
+            final float threshold = slop;
+            if (deltaX >= threshold &&
+                    deltaX >= deltaY * GESTURE_DIRECTION_DOMINANCE) {
+                sGestureDirection = GESTURE_DIRECTION_HORIZONTAL;
+            } else if (deltaY >= threshold &&
+                    deltaY >= deltaX * GESTURE_DIRECTION_DOMINANCE) {
+                sGestureDirection = GESTURE_DIRECTION_VERTICAL;
+            }
+        }
+        return sGestureDirection == GESTURE_DIRECTION_HORIZONTAL;
+    }
+
+    private static void clearTransientHintNow() {
+        sPendingHintCommand = PENDING_HINT_NONE;
+        sPendingTransientHint.setEmpty();
+        sPendingHintView.clear();
+        sPendingPageTurn = false;
+        sPendingGestureId = 0;
+        sLastHintView.clear();
+        sLastPageTurn = false;
+        sLastGestureId = 0;
+        transactTransientHint(null, false, 0);
+    }
+
     private static void queueTransientHintClear() {
         sPendingHintCommand = PENDING_HINT_CLEAR;
         sPendingTransientHint.setEmpty();
         sPendingHintView.clear();
+        sPendingPageTurn = false;
+        sPendingGestureId = 0;
         sLastHintView.clear();
+        sLastPageTurn = false;
+        sLastGestureId = 0;
         scheduleHintFrame();
     }
 
-    private static void queueTransientHint(View view, Rect region) {
+    private static void queueTransientHint(View view, Rect region,
+            boolean pageTurn, int gestureId) {
         if (sPendingHintCommand != PENDING_HINT_SET) {
             sPendingTransientHint.set(region);
             sPendingHintView = new WeakReference<>(view);
+            sPendingPageTurn = pageTurn;
+            sPendingGestureId = gestureId;
             sPendingHintCommand = PENDING_HINT_SET;
         } else if (Rect.intersects(sPendingTransientHint, region) &&
                 area(region) < area(sPendingTransientHint)) {
@@ -158,11 +229,20 @@ public final class Leaf3EinkHelper {
             // Keep the smallest overlapping view for this input event.
             sPendingTransientHint.set(region);
             sPendingHintView = new WeakReference<>(view);
+            sPendingPageTurn = pageTurn;
+            sPendingGestureId = gestureId;
         } else if (!Rect.intersects(sPendingTransientHint, region)) {
             // A distinct dispatch later in the same frame supersedes the old
             // candidate instead of merging unrelated view regions.
             sPendingTransientHint.set(region);
             sPendingHintView = new WeakReference<>(view);
+            sPendingPageTurn = pageTurn;
+            sPendingGestureId = gestureId;
+        } else {
+            // Nested dispatches calculate the same direction; assignment also
+            // lets a later move sample replace an earlier undecided result.
+            sPendingPageTurn = pageTurn;
+            sPendingGestureId = gestureId;
         }
         scheduleHintFrame();
     }
@@ -186,25 +266,36 @@ public final class Leaf3EinkHelper {
         }
         if (sPendingHintCommand == PENDING_HINT_CLEAR) {
             sLastHintView.clear();
-            transactTransientHint(null);
+            sLastPageTurn = false;
+            sLastGestureId = 0;
+            transactTransientHint(null, false, 0);
         } else {
             final Rect region = new Rect(sPendingTransientHint);
             final View view = sPendingHintView.get();
             if (view != null) {
                 sLastHintView = new WeakReference<>(view);
             }
-            transactTransientHint(region);
+            sLastPageTurn = sPendingPageTurn;
+            sLastGestureId = sPendingGestureId;
+            transactTransientHint(region, sPendingPageTurn,
+                    sPendingGestureId);
         }
         sPendingHintCommand = PENDING_HINT_NONE;
         sPendingTransientHint.setEmpty();
         sPendingHintView.clear();
+        sPendingPageTurn = false;
+        sPendingGestureId = 0;
     }
 
     private static void startFlingRenewal() {
         stopFlingRenewal();
         final View view = sPendingHintCommand == PENDING_HINT_SET
                 ? sPendingHintView.get() : sLastHintView.get();
-        if (view == null || !view.isAttachedToWindow()) {
+        final boolean pageTurn = sPendingHintCommand == PENDING_HINT_SET
+                ? sPendingPageTurn : sLastPageTurn;
+        final int gestureId = sPendingHintCommand == PENDING_HINT_SET
+                ? sPendingGestureId : sLastGestureId;
+        if (view == null || !view.isAttachedToWindow() || gestureId <= 0) {
             return;
         }
 
@@ -214,6 +305,8 @@ public final class Leaf3EinkHelper {
         sLastFlingRenewal = 0;
         sLastFlingMotion = startNow;
         sFlingMotionSignature = viewMotionSignature(view);
+        sFlingPageTurn = pageTurn;
+        sFlingGestureId = gestureId;
         sFlingView = new WeakReference<>(view);
         sFlingDrawListener = () -> {
             if (generation != sFlingGeneration) {
@@ -245,7 +338,8 @@ public final class Leaf3EinkHelper {
                 if (flingView.getGlobalVisibleRect(visible) &&
                         !visible.isEmpty()) {
                     sLastFlingRenewal = now;
-                    queueTransientHint(flingView, visible);
+                    queueTransientHint(flingView, visible, sFlingPageTurn,
+                            sFlingGestureId);
                 }
             }
             return true;
@@ -297,9 +391,12 @@ public final class Leaf3EinkHelper {
         sLastFlingRenewal = 0;
         sLastFlingMotion = 0;
         sFlingMotionSignature = 0;
+        sFlingPageTurn = false;
+        sFlingGestureId = 0;
     }
 
-    private static void transactTransientHint(Rect region) {
+    private static void transactTransientHint(Rect region, boolean pageTurn,
+            int gestureId) {
         IBinder surfaceFlinger = sSurfaceFlinger;
         if (surfaceFlinger == null || !surfaceFlinger.isBinderAlive()) {
             surfaceFlinger = ServiceManager.checkService(SURFACE_FLINGER);
@@ -321,6 +418,8 @@ public final class Leaf3EinkHelper {
                 data.writeInt(region.right);
                 data.writeInt(region.bottom);
                 data.writeInt(TRANSIENT_HINT_DURATION_MS);
+                data.writeInt(pageTurn ? 1 : 0);
+                data.writeInt(gestureId);
             }
             surfaceFlinger.transact(TRANSIENT_HINT_TRANSACTION, data, null,
                     IBinder.FLAG_ONEWAY);

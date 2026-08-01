@@ -194,10 +194,12 @@ public:
     cleanupSchedule.clear();
     settledDeadline = 0;
     settledRegion = Rect();
-    pageCount = 0;
+    readerPages.reset();
     transientRegion = Rect();
     transientDeadline = 0;
     transientUid = -1;
+    transientPageTurn = false;
+    transientGestureId = -1;
   }
 
   void markFastLocked(const Rect &rect) {
@@ -316,7 +318,15 @@ public:
     }
     cleanupSchedule.clear();
     std::fill(ghostAge.begin(), ghostAge.end(), 0);
-    pageCount = 0;
+    readerPages.reset();
+  }
+
+  void applyReaderPolicyLocked() {
+    if (effectiveMode() != "reader" ||
+        cleanupPolicyLocked() == Leaf3CleanupPolicy::Manual ||
+        supportedPageInterval() == 0) {
+      readerPages.reset();
+    }
   }
 
   void discardPendingWorkLocked() {
@@ -329,8 +339,10 @@ public:
     transientDeadline = 0;
     transientRegion = Rect();
     transientUid = -1;
+    transientPageTurn = false;
+    transientGestureId = -1;
     std::fill(ghostAge.begin(), ghostAge.end(), 0);
-    pageCount = 0;
+    readerPages.reset();
     armedDeadline = 0;
   }
 
@@ -347,6 +359,10 @@ public:
     }
     if (settledDeadline != 0 && (deadline == 0 || settledDeadline < deadline)) {
       deadline = settledDeadline;
+    }
+    const nsecs_t readerDeadline = readerPages.deadline();
+    if (readerDeadline != 0 && (deadline == 0 || readerDeadline < deadline)) {
+      deadline = readerDeadline;
     }
     if (cleanupSchedule.pending() && !hasGhostLocked()) {
       cleanupSchedule.clear();
@@ -373,6 +389,17 @@ public:
                            static_cast<uint32_t>(rect.bottom), mode};
   }
 
+  std::vector<Leaf3EpdcUpdate> makeReaderFullRefreshLocked() {
+    wakePending = false;
+    wakeDispatched = false;
+    cleanupSchedule.clear();
+    std::fill(ghostAge.begin(), ghostAge.end(), 0);
+    ++pageCleanups;
+    ++fullRefreshes;
+    armTimerLocked();
+    return {makeUpdateLocked(bounds, kWaveformGc16 | kModeFull | ditherFlag())};
+  }
+
   std::vector<Leaf3EpdcUpdate> forcedUpdateLocked(nsecs_t now) {
     if (manualPending) {
       manualPending = false;
@@ -382,11 +409,20 @@ public:
       settledDeadline = 0;
       settledRegion = Rect();
       std::fill(ghostAge.begin(), ghostAge.end(), 0);
-      pageCount = 0;
+      readerPages.reset();
       ++fullRefreshes;
       armTimerLocked();
       return {
           makeUpdateLocked(bounds, kWaveformGc16 | kModeFull | ditherFlag())};
+    }
+    const Leaf3ReaderPageResult readerResult =
+        readerPages.settle(now, supportedPageInterval());
+    if (readerResult != Leaf3ReaderPageResult::None) {
+      wakePending = false;
+      wakeDispatched = false;
+      if (readerResult == Leaf3ReaderPageResult::FullRefresh) {
+        return makeReaderFullRefreshLocked();
+      }
     }
     if (settledDeadline != 0 && now >= settledDeadline &&
         !settledRegion.isEmpty()) {
@@ -422,8 +458,11 @@ public:
     nextStatsPublish = systemTime() + kStatsInterval;
     while (!stopping) {
       const nsecs_t now = systemTime();
-      if (activeLocked()) {
+      const bool interactive =
+          android::base::GetBoolProperty(kInteractiveProperty, true);
+      if (shouldRunLeaf3Timers(activeLocked(), interactive)) {
         applyCleanupPolicyLocked();
+        applyReaderPolicyLocked();
         armTimerLocked();
       } else {
         discardPendingWorkLocked();
@@ -531,13 +570,15 @@ public:
   std::vector<uint64_t> ghostAge;
   uint64_t ageSequence = 0;
   std::string foregroundToken;
-  int pageCount = 0;
+  Leaf3ReaderPageSchedule readerPages;
   Rect settledRegion;
   Rect notifierDamage;
   Rect transientRegion;
   nsecs_t settledDeadline = 0;
   nsecs_t transientDeadline = 0;
   int32_t transientUid = -1;
+  bool transientPageTurn = false;
+  int32_t transientGestureId = -1;
   Leaf3CleanupSchedule cleanupSchedule;
   nsecs_t armedDeadline = 0;
   nsecs_t nextStatsPublish = 0;
@@ -613,6 +654,7 @@ Leaf3EpdcController::preparePresent(const Region &damage, const Rect &bounds) {
   }
   mImpl->configureBoundsLocked(bounds);
   if (!android::base::GetBoolProperty(kInteractiveProperty, true)) {
+    mImpl->discardPendingWorkLocked();
     return {};
   }
   const nsecs_t now = systemTime();
@@ -620,20 +662,28 @@ Leaf3EpdcController::preparePresent(const Region &damage, const Rect &bounds) {
       android::base::GetProperty(kActivePackageProperty, "");
   if (package != mImpl->foregroundToken) {
     mImpl->foregroundToken = package;
-    mImpl->pageCount = 0;
+    mImpl->readerPages.reset();
     mImpl->transientRegion = Rect();
     mImpl->transientDeadline = 0;
     mImpl->transientUid = -1;
+    mImpl->transientPageTurn = false;
+    mImpl->transientGestureId = -1;
   }
 
   const std::string cleanup =
       android::base::GetProperty(kCleanupProperty, "balanced");
   const std::string mode = effectiveMode();
+  const int pageInterval = supportedPageInterval();
   const bool settledQuality =
       android::base::GetBoolProperty(kSettledQualityProperty, true);
+  const uint64_t panelArea = rectArea(bounds);
+  const bool large = panelArea != 0 && damageArea(damage) >= panelArea / 3;
 
   if (cleanup == "manual") {
     mImpl->applyCleanupPolicyLocked();
+  }
+  if (mode != "reader" || cleanup == "manual" || pageInterval == 0) {
+    mImpl->readerPages.reset();
   }
   if (mode != "regal" || !settledQuality) {
     mImpl->settledDeadline = 0;
@@ -653,24 +703,7 @@ Leaf3EpdcController::preparePresent(const Region &damage, const Rect &bounds) {
       mImpl->settledRegion = Rect();
     }
   }
-  mImpl->armTimerLocked();
-
-  const nsecs_t cleanupDeadline =
-      mImpl->cleanupSchedule.deadline(mImpl->cleanupPolicyLocked());
-  if (mImpl->wakePending || mImpl->manualPending ||
-      (mImpl->settledDeadline != 0 && now >= mImpl->settledDeadline) ||
-      (cleanupDeadline != 0 && now >= cleanupDeadline)) {
-    auto forced = mImpl->forcedUpdateLocked(now);
-    if (!forced.empty()) {
-      return forced;
-    }
-  }
-
   const Rect rect = alignedRect(damage.getBounds(), bounds);
-  if (rect.isEmpty()) {
-    return {};
-  }
-
   const int32_t activeUid =
       android::base::GetIntProperty(kActiveUidProperty, -1);
   if (mImpl->transientDeadline != 0 &&
@@ -679,6 +712,8 @@ Leaf3EpdcController::preparePresent(const Region &damage, const Rect &bounds) {
     mImpl->transientRegion = Rect();
     mImpl->transientDeadline = 0;
     mImpl->transientUid = -1;
+    mImpl->transientPageTurn = false;
+    mImpl->transientGestureId = -1;
   }
   const Rect transient =
       alignedRect(intersectRects(mImpl->transientRegion, bounds), bounds);
@@ -697,9 +732,65 @@ Leaf3EpdcController::preparePresent(const Region &damage, const Rect &bounds) {
                       transient.bottom});
   const bool transientScrolling =
       !transientSplit.overflow && transientSplit.transientCount != 0;
+  const bool transientMotion =
+      transientScrolling ||
+      (transientSplit.overflow && !intersectRects(rect, transient).isEmpty());
+  const bool readerPageTurnActive =
+      mode == "reader" && mImpl->transientPageTurn && !transient.isEmpty();
+  const bool readerPageTurnMotion = readerPageTurnActive && transientMotion;
+  const bool readerVerticalScrollMotion =
+      mode == "reader" && !mImpl->transientPageTurn && transientMotion;
+  const bool trackTransientGhosts = leaf3ShouldTrackTransientGhosts(
+      cleanup != "manual", readerPageTurnMotion);
 
-  const uint64_t panelArea = rectArea(bounds);
-  const bool large = panelArea != 0 && damageArea(damage) >= panelArea / 3;
+  const bool readerPageCandidate = leaf3ReaderPageCandidate(
+      large, transient.isEmpty(), transientSplit.overflow, transientScrolling,
+      mImpl->transientPageTurn);
+  Leaf3ReaderPageResult readerPresentResult = Leaf3ReaderPageResult::None;
+  if (mode == "reader" && cleanup != "manual" && pageInterval > 0 &&
+      !damage.isEmpty() && !mImpl->manualPending) {
+    if (readerVerticalScrollMotion) {
+      readerPresentResult = mImpl->readerPages.advanceScroll(now, pageInterval);
+    } else if (large && mImpl->transientPageTurn &&
+               mImpl->transientGestureId > 0) {
+      readerPresentResult = mImpl->readerPages.advanceGesture(
+          now, mImpl->transientGestureId, pageInterval);
+    } else {
+      // Static large replacements cover tap and button page turns. Animated
+      // frames without a page-turn gesture are debounced before counting.
+      readerPresentResult = mImpl->readerPages.advancePresent(
+          now, readerPageCandidate, pageInterval);
+    }
+  }
+  if (readerPresentResult == Leaf3ReaderPageResult::FullRefresh) {
+    return mImpl->makeReaderFullRefreshLocked();
+  }
+
+  if (readerPageTurnActive && cleanup != "manual" &&
+      mImpl->cleanupSchedule.pending()) {
+    // Do not create generic cleanup work for a Reader page turn, but keep
+    // cleanup already owed by earlier scrolling from firing during motion.
+    mImpl->cleanupSchedule.noteActivity(now);
+  }
+  mImpl->armTimerLocked();
+
+  const nsecs_t cleanupDeadline =
+      mImpl->cleanupSchedule.deadline(mImpl->cleanupPolicyLocked());
+  const nsecs_t readerDeadline = mImpl->readerPages.deadline();
+  if (mImpl->wakePending || mImpl->manualPending ||
+      (mImpl->settledDeadline != 0 && now >= mImpl->settledDeadline) ||
+      (readerDeadline != 0 && now >= readerDeadline) ||
+      (cleanupDeadline != 0 && now >= cleanupDeadline)) {
+    auto forced = mImpl->forcedUpdateLocked(now);
+    if (!forced.empty()) {
+      return forced;
+    }
+  }
+
+  if (rect.isEmpty()) {
+    return {};
+  }
+
   uint32_t waveform = kWaveformAuto;
   bool fast = false;
   bool readerPage = false;
@@ -723,28 +814,14 @@ Leaf3EpdcController::preparePresent(const Region &damage, const Rect &bounds) {
   } else if (mode == "reader") {
     waveform = kWaveformDu;
     fast = true;
-    readerPage = large && !transientScrolling;
-    if (readerPage && cleanup != "manual") {
-      const int interval = supportedPageInterval();
-      ++mImpl->pageCount;
-      if (interval > 0 && mImpl->pageCount >= interval) {
-        waveform = kWaveformGc16;
-        fast = false;
-        mImpl->pageCount = 0;
-        mImpl->clearGhostLocked(rect);
-        if (!mImpl->hasGhostLocked()) {
-          mImpl->cleanupSchedule.clear();
-        }
-        ++mImpl->pageCleanups;
-      }
-    }
+    readerPage = readerPageCandidate;
   }
 
-  if (fast && !readerPage && cleanup != "manual") {
+  if (fast && !readerPage && trackTransientGhosts) {
     mImpl->markFastLocked(rect);
     mImpl->cleanupSchedule.noteActivity(now);
   }
-  if (transientScrolling && waveform != kWaveformAnim && cleanup != "manual") {
+  if (transientScrolling && waveform != kWaveformAnim && trackTransientGhosts) {
     for (size_t index = 0; index < transientSplit.transientCount; ++index) {
       const Leaf3PolicyRect &moving = transientSplit.transient[index];
       mImpl->markFastLocked(
@@ -809,6 +886,8 @@ bool Leaf3EpdcController::takeNotifierDamage(Rect *damage,
     mImpl->transientRegion = Rect();
     mImpl->transientDeadline = 0;
     mImpl->transientUid = -1;
+    mImpl->transientPageTurn = false;
+    mImpl->transientGestureId = -1;
   }
   if (mImpl->notifierDamage.isEmpty()) {
     return false;
@@ -819,9 +898,10 @@ bool Leaf3EpdcController::takeNotifierDamage(Rect *damage,
 }
 
 void Leaf3EpdcController::setTransientHint(const Rect &region, nsecs_t duration,
-                                           int32_t ownerUid) {
+                                           int32_t ownerUid, bool pageTurn,
+                                           int32_t gestureId) {
   std::lock_guard<std::mutex> lock(mImpl->mutex);
-  if (!region.isValid() || region.isEmpty() || ownerUid < 0) {
+  if (!region.isValid() || region.isEmpty() || ownerUid < 0 || gestureId <= 0) {
     return;
   }
   const nsecs_t now = systemTime();
@@ -829,6 +909,8 @@ void Leaf3EpdcController::setTransientHint(const Rect &region, nsecs_t duration,
   mImpl->transientDeadline =
       now + std::clamp<nsecs_t>(duration, 100000000, 2000000000);
   mImpl->transientUid = ownerUid;
+  mImpl->transientPageTurn = pageTurn;
+  mImpl->transientGestureId = gestureId;
 }
 
 void Leaf3EpdcController::clearTransientHint() {
@@ -836,6 +918,8 @@ void Leaf3EpdcController::clearTransientHint() {
   mImpl->transientRegion = Rect();
   mImpl->transientDeadline = 0;
   mImpl->transientUid = -1;
+  mImpl->transientPageTurn = false;
+  mImpl->transientGestureId = -1;
 }
 
 void Leaf3EpdcController::requestFullRefresh() {

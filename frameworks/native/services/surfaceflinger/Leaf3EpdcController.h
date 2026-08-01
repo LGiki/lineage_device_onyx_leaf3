@@ -39,7 +39,8 @@ public:
   std::vector<Leaf3EpdcUpdate> preparePresent(const Region &damage,
                                               const Rect &bounds);
   bool takeNotifierDamage(Rect *damage, Rect *transientHint);
-  void setTransientHint(const Rect &region, nsecs_t duration, int32_t ownerUid);
+  void setTransientHint(const Rect &region, nsecs_t duration, int32_t ownerUid,
+                        bool pageTurn, int32_t gestureId);
   void clearTransientHint();
   void requestFullRefresh();
   bool beginSubmission();

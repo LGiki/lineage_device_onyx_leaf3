@@ -74,7 +74,7 @@ class FrameNotifierPatcherTest(unittest.TestCase):
                         self.patcher.LEAF3_EPDC_INCLUDE,
                         self.patcher.FCNTL_INCLUDE,
                         self.patcher.UNISTD_INCLUDE,
-                        self.patcher.NOTIFIER_STATE,
+                        self.patcher.PREVIOUS_TRANSIENT_V1_NOTIFIER_STATE,
                         self.patcher.CREDENTIAL_HOOK,
                         self.patcher.PREVIOUS_UNOWNED_TRANSACTION_HOOK,
                         self.patcher.POST_FRAME_HOOK,
@@ -94,6 +94,35 @@ class FrameNotifierPatcherTest(unittest.TestCase):
             self.assertNotIn(
                 self.patcher.PREVIOUS_UNOWNED_TRANSACTION_HOOK, upgraded
             )
+            self.assertEqual(
+                self.run_patcher(source, "--check").returncode, 0
+            )
+
+    def test_upgrades_version_one_transient_protocol(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "SurfaceFlinger.cpp"
+            source.write_text(
+                "".join(
+                    (
+                        self.patcher.UNIQUE_FD_INCLUDE,
+                        self.patcher.LEAF3_EPDC_INCLUDE,
+                        self.patcher.FCNTL_INCLUDE,
+                        self.patcher.UNISTD_INCLUDE,
+                        self.patcher.PREVIOUS_TRANSIENT_V1_NOTIFIER_STATE,
+                        self.patcher.CREDENTIAL_HOOK,
+                        self.patcher.PREVIOUS_TRANSIENT_V1_TRANSACTION_HOOK,
+                        self.patcher.POST_FRAME_HOOK,
+                    )
+                )
+            )
+            self.assertNotEqual(
+                self.run_patcher(source, "--check").returncode, 0
+            )
+            result = self.run_patcher(source)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            upgraded = source.read_text()
+            self.assertIn(self.patcher.NOTIFIER_STATE, upgraded)
+            self.assertIn(self.patcher.TRANSACTION_HOOK, upgraded)
             self.assertEqual(
                 self.run_patcher(source, "--check").returncode, 0
             )
@@ -121,6 +150,11 @@ class FrameNotifierPatcherTest(unittest.TestCase):
         transaction = self.patcher.TRANSACTION_HOOK
         credentials = self.patcher.CREDENTIAL_HOOK
         self.assertIn("durationMs < 100 || durationMs > 2000", transaction)
+        self.assertIn("const int32_t pageTurn = data.readInt32()", transaction)
+        self.assertIn("const int32_t gestureId = data.readInt32()", transaction)
+        self.assertIn("(pageTurn != 0 && pageTurn != 1)", transaction)
+        self.assertIn("gestureId <= 0", transaction)
+        self.assertIn("pageTurn != 0", transaction)
         self.assertIn("region.right > 16384", transaction)
         self.assertIn("takeNotifierDamage(", transaction)
         self.assertIn("reply->writeInt32(transientHint.left)", transaction)
@@ -162,7 +196,9 @@ class FrameNotifierPatcherTest(unittest.TestCase):
         ).read_text()
         self.assertIn("#include <utils/Timers.h>", header)
         self.assertIn(
-            "const Rect &region, nsecs_t duration, int32_t ownerUid", header
+            "const Rect &region, nsecs_t duration, int32_t ownerUid,\n"
+            "                        bool pageTurn, int32_t gestureId",
+            header,
         )
 
 

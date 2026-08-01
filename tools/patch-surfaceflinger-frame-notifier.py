@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 
 
-PATCHER_VERSION = "8"
+PATCHER_VERSION = "9"
 
 UNIQUE_FD_INCLUDE = "#include <android-base/unique_fd.h>\n"
 LEAF3_EPDC_INCLUDE = '#include "Leaf3EpdcController.h"\n'
@@ -23,7 +23,7 @@ NOTIFIER_STATE = """\
 constexpr uint32_t kLeaf3FrameNotifierTransaction = 1037;
 constexpr uint32_t kLeaf3TransientHintTransaction = 1038;
 constexpr int32_t kLeaf3FrameNotifierVersion = 3;
-constexpr int32_t kLeaf3TransientHintVersion = 1;
+constexpr int32_t kLeaf3TransientHintVersion = 2;
 constexpr int32_t kLeaf3FrameNotifierUnregister = 0;
 constexpr int32_t kLeaf3FrameNotifierRegister = 1;
 constexpr int32_t kLeaf3FrameNotifierTakeDamage = 2;
@@ -99,14 +99,17 @@ status_t SurfaceFlinger::onTransact(uint32_t code, const Parcel& data, Parcel* r
         const Rect region(data.readInt32(), data.readInt32(),
                           data.readInt32(), data.readInt32());
         const int32_t durationMs = data.readInt32();
+        const int32_t pageTurn = data.readInt32();
+        const int32_t gestureId = data.readInt32();
         if (!region.isValid() || region.isEmpty() || region.left < 0 ||
             region.top < 0 || region.right > 16384 || region.bottom > 16384 ||
-            durationMs < 100 || durationMs > 2000) {
+            durationMs < 100 || durationMs > 2000 ||
+            (pageTurn != 0 && pageTurn != 1) || gestureId <= 0) {
             return BAD_VALUE;
         }
         Leaf3EpdcController::get().setTransientHint(
                 region, static_cast<nsecs_t>(durationMs) * 1000000,
-                static_cast<int32_t>(callingUid));
+                static_cast<int32_t>(callingUid), pageTurn != 0, gestureId);
         return NO_ERROR;
     }
 
@@ -209,11 +212,28 @@ status_t SurfaceFlinger::onTransact(uint32_t code, const Parcel& data, Parcel* r
     status_t credentialCheck = CheckTransactCodeCredentials(code);
 """
 
+PREVIOUS_TRANSIENT_V1_NOTIFIER_STATE = NOTIFIER_STATE.replace(
+    "constexpr int32_t kLeaf3TransientHintVersion = 2;\n",
+    "constexpr int32_t kLeaf3TransientHintVersion = 1;\n",
+)
+PREVIOUS_TRANSIENT_V1_TRANSACTION_HOOK = TRANSACTION_HOOK.replace(
+    "        const int32_t pageTurn = data.readInt32();\n", ""
+).replace(
+    "        const int32_t gestureId = data.readInt32();\n", ""
+).replace(
+    "            durationMs < 100 || durationMs > 2000 ||\n"
+    "            (pageTurn != 0 && pageTurn != 1) || gestureId <= 0) {",
+    "            durationMs < 100 || durationMs > 2000) {",
+).replace(
+    "                static_cast<int32_t>(callingUid), pageTurn != 0, gestureId);",
+    "                static_cast<int32_t>(callingUid));",
+)
+
 PREVIOUS_V2_NOTIFIER_STATE = NOTIFIER_STATE.replace(
     "constexpr uint32_t kLeaf3TransientHintTransaction = 1038;\n", ""
 ).replace(
     "constexpr int32_t kLeaf3FrameNotifierVersion = 3;\n"
-    "constexpr int32_t kLeaf3TransientHintVersion = 1;\n",
+    "constexpr int32_t kLeaf3TransientHintVersion = 2;\n",
     "constexpr int32_t kLeaf3FrameNotifierVersion = 2;\n",
 ).replace(
     'constexpr char kLeaf3ActiveUidProperty[] = "sys.leaf3.active_uid";\n',
@@ -286,7 +306,7 @@ PREVIOUS_V2_TRANSACTION_HOOK = TRANSACTION_HOOK[
 """,
     "",
 )
-PREVIOUS_UNOWNED_TRANSACTION_HOOK = TRANSACTION_HOOK.replace(
+PREVIOUS_UNOWNED_TRANSACTION_HOOK = PREVIOUS_TRANSIENT_V1_TRANSACTION_HOOK.replace(
     "        const uid_t callingUid = IPCThreadState::self()->getCallingUid();\n",
     "",
     1,
@@ -671,7 +691,35 @@ def main() -> int:
         print(f"{path}: Leaf3 frame notifier is present")
         return 0
     if (
-        NOTIFIER_STATE in text
+        PREVIOUS_TRANSIENT_V1_NOTIFIER_STATE in text
+        and CREDENTIAL_HOOK in text
+        and PREVIOUS_TRANSIENT_V1_TRANSACTION_HOOK in text
+        and POST_FRAME_HOOK in text
+    ):
+        if args.check:
+            parser.error(
+                f"{path}: Leaf3 transient hints need page-turn classification"
+            )
+        try:
+            text = replace_once(
+                text,
+                PREVIOUS_TRANSIENT_V1_NOTIFIER_STATE,
+                NOTIFIER_STATE,
+                "version-one transient-hint state",
+            )
+            text = replace_once(
+                text,
+                PREVIOUS_TRANSIENT_V1_TRANSACTION_HOOK,
+                TRANSACTION_HOOK,
+                "version-one transient-hint transaction",
+            )
+        except ValueError as error:
+            parser.error(f"{path}: {error}")
+        path.write_text(text)
+        print(f"{path}: added page-turn gesture hints")
+        return 0
+    if (
+        PREVIOUS_TRANSIENT_V1_NOTIFIER_STATE in text
         and CREDENTIAL_HOOK in text
         and PREVIOUS_UNOWNED_TRANSACTION_HOOK in text
         and POST_FRAME_HOOK in text
@@ -681,6 +729,12 @@ def main() -> int:
                 f"{path}: Leaf3 transient hints need UID ownership"
             )
         try:
+            text = replace_once(
+                text,
+                PREVIOUS_TRANSIENT_V1_NOTIFIER_STATE,
+                NOTIFIER_STATE,
+                "unowned transient-hint state",
+            )
             text = replace_once(
                 text,
                 PREVIOUS_UNOWNED_TRANSACTION_HOOK,

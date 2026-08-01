@@ -8,7 +8,7 @@ import argparse
 from pathlib import Path
 
 
-PATCHER_VERSION = "2"
+PATCHER_VERSION = "4"
 VIEW_HOOK = "        Leaf3EinkHelper.noteTouchDispatch(this, event, result);\n"
 VIEW_GROUP_HOOK = (
     "        Leaf3EinkHelper.noteTouchDispatch(this, ev, handled);\n"

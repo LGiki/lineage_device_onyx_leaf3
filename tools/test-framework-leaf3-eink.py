@@ -217,6 +217,30 @@ class FrameworkEinkPatcherTest(unittest.TestCase):
             self.assertIn("FLING_QUIET_TIMEOUT_MS", helper)
             self.assertIn("viewMotionSignature(flingView)", helper)
             self.assertIn("sGestureHinted = false", helper)
+            self.assertIn("TRANSIENT_HINT_VERSION = 2", helper)
+            self.assertIn("GESTURE_DIRECTION_DOMINANCE = 1.5f", helper)
+            self.assertIn("final float threshold = slop", helper)
+            self.assertIn(
+                "isPageTurnGesture(\n"
+                "                            deltaX, deltaY, slop)",
+                helper,
+            )
+            self.assertIn(
+                "sGestureDirection != GESTURE_DIRECTION_UNKNOWN", helper
+            )
+            self.assertIn(
+                "sGestureDirection = GESTURE_DIRECTION_UNKNOWN", helper
+            )
+            self.assertNotIn("sPendingPageTurn |= pageTurn", helper)
+            self.assertIn("data.writeInt(pageTurn ? 1 : 0)", helper)
+            self.assertIn("data.writeInt(gestureId)", helper)
+            self.assertIn("sCurrentGestureId = nextGestureId()", helper)
+            self.assertIn(
+                "event.getDownTime() == sCurrentGestureDownTime", helper
+            )
+            self.assertIn("clearTransientHintNow();", helper)
+            self.assertIn("transactTransientHint(null, false, 0)", helper)
+            self.assertIn("sFlingGestureId", helper)
             self.assertIn(
                 "if (sGestureHinted) {\n"
                 "                    startFlingRenewal();",

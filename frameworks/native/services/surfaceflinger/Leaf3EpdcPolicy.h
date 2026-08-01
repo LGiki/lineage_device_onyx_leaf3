@@ -13,6 +13,7 @@ namespace android {
 constexpr uint32_t kLeaf3CommitEpdcCommand = 0x08020000;
 constexpr int64_t kLeaf3QualityCleanupDelay = 300000000;
 constexpr int64_t kLeaf3BalancedCleanupDelay = 600000000;
+constexpr int64_t kLeaf3ReaderPageSettleDelay = 180000000;
 constexpr size_t kLeaf3MaximumUpdates = 8;
 
 constexpr bool leaf3TransientHintAuthorized(int32_t ownerUid,
@@ -154,6 +155,166 @@ private:
   int64_t mQuietSince = 0;
 };
 
+enum class Leaf3ReaderPageResult {
+  None,
+  Counted,
+  FullRefresh,
+};
+
+constexpr bool leaf3ReaderPageCandidate(bool large, bool hintEmpty,
+                                        bool splitOverflow,
+                                        bool transientScrolling,
+                                        bool pageTurnGesture) {
+  return large && (hintEmpty || pageTurnGesture ||
+                   (!splitOverflow && !transientScrolling));
+}
+
+constexpr bool leaf3ShouldTrackTransientGhosts(bool cleanupEnabled,
+                                               bool readerPageTurnMotion) {
+  return cleanupEnabled && !readerPageTurnMotion;
+}
+
+class Leaf3ReaderPageSchedule {
+public:
+  void notePresent(int64_t now, bool large) {
+    if (mFullRefreshPending) {
+      mQuietSince = now;
+      return;
+    }
+    if (large) {
+      mPending = true;
+    }
+    if (mPending) {
+      mQuietSince = now;
+    }
+  }
+
+  void reset() {
+    mPending = false;
+    mFullRefreshPending = false;
+    mQuietSince = 0;
+    mPageCount = 0;
+    mLastGestureId = -1;
+  }
+
+  int64_t deadline() const {
+    return (mPending || mFullRefreshPending)
+               ? mQuietSince + kLeaf3ReaderPageSettleDelay
+               : 0;
+  }
+
+  Leaf3ReaderPageResult settle(int64_t now, int interval) {
+    const int64_t target = deadline();
+    if (target == 0 || now < target) {
+      return Leaf3ReaderPageResult::None;
+    }
+    if (mFullRefreshPending) {
+      mFullRefreshPending = false;
+      mQuietSince = 0;
+      return Leaf3ReaderPageResult::FullRefresh;
+    }
+    mPending = false;
+    mQuietSince = 0;
+    if (interval <= 0) {
+      mPageCount = 0;
+      return Leaf3ReaderPageResult::Counted;
+    }
+    ++mPageCount;
+    if (mPageCount < interval) {
+      return Leaf3ReaderPageResult::Counted;
+    }
+    mPageCount = 0;
+    return Leaf3ReaderPageResult::FullRefresh;
+  }
+
+  Leaf3ReaderPageResult advancePresent(int64_t now, bool large, int interval) {
+    const Leaf3ReaderPageResult result = settle(now, interval);
+    if (result == Leaf3ReaderPageResult::FullRefresh) {
+      return deferFullRefresh(now);
+    }
+    notePresent(now, large);
+    return result;
+  }
+
+  Leaf3ReaderPageResult advanceScroll(int64_t now, int interval) {
+    const Leaf3ReaderPageResult result = settle(now, interval);
+    if (result == Leaf3ReaderPageResult::FullRefresh) {
+      return deferFullRefresh(now);
+    }
+    if (mFullRefreshPending) {
+      mQuietSince = now;
+      return result;
+    }
+    // A vertical gesture proves that an unexpired large candidate was a
+    // scrolling frame, not a completed static page.
+    mPending = false;
+    mQuietSince = 0;
+    return result;
+  }
+
+  Leaf3ReaderPageResult advanceGesture(int64_t now, int32_t gestureId,
+                                       int interval) {
+    if (gestureId <= 0) {
+      return Leaf3ReaderPageResult::None;
+    }
+    const Leaf3ReaderPageResult settled = settle(now, interval);
+    if (settled == Leaf3ReaderPageResult::FullRefresh) {
+      mLastGestureId = gestureId;
+      return deferFullRefresh(now);
+    }
+    if (mFullRefreshPending) {
+      // A newer gesture will be included in the already-owed cleanup, so it
+      // extends the quiet deadline and becomes part of that clean baseline.
+      mLastGestureId = gestureId;
+      mQuietSince = now;
+      return settled;
+    }
+    if (gestureId == mLastGestureId) {
+      return settled;
+    }
+    mLastGestureId = gestureId;
+    // A present can beat its one-way gesture hint and start a static-page
+    // debounce. Absorb it only while its quiet window is still active; settle
+    // above has already counted a truly separate, expired static page.
+    if (mPending) {
+      mPending = false;
+      mQuietSince = 0;
+    }
+    if (interval <= 0) {
+      mPageCount = 0;
+      return Leaf3ReaderPageResult::Counted;
+    }
+    const int totalPages = mPageCount + 1;
+    if (totalPages < interval) {
+      mPageCount = totalPages;
+      return Leaf3ReaderPageResult::Counted;
+    }
+    // Count the gesture now, but wait until all of its animation frames have
+    // been quiet before cleaning the final composed page.
+    mPageCount = 0;
+    mFullRefreshPending = true;
+    mQuietSince = now;
+    return Leaf3ReaderPageResult::Counted;
+  }
+
+  int pageCount() const { return mPageCount; }
+
+private:
+  Leaf3ReaderPageResult deferFullRefresh(int64_t now) {
+    // Damage arriving at the deadline breaks the quiet period. Clean only
+    // after this newest frame and any following animation have settled.
+    mFullRefreshPending = true;
+    mQuietSince = now;
+    return Leaf3ReaderPageResult::Counted;
+  }
+
+  bool mPending = false;
+  bool mFullRefreshPending = false;
+  int64_t mQuietSince = 0;
+  int mPageCount = 0;
+  int32_t mLastGestureId = -1;
+};
+
 struct Leaf3PresentPolicy {
   bool restartCleanup;
   bool cancelSettled;
@@ -177,6 +338,10 @@ constexpr bool shouldActivateLeaf3Controller(bool requested, bool supported,
                                              bool failed, bool blocked,
                                              bool callbackAvailable) {
   return requested && supported && !failed && !blocked && callbackAvailable;
+}
+
+constexpr bool shouldRunLeaf3Timers(bool active, bool interactive) {
+  return active && interactive;
 }
 
 constexpr bool isLeaf3CommitEpdcCommand(uint32_t command) {
